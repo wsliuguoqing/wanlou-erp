@@ -307,6 +307,9 @@ function lineCalc(l) {
   const noUnit = t / (1 + RATE / 100);
   return {q, taxUnit: t, taxSum, noUnit, noSum: taxSum / (1 + RATE / 100)};
 }
+function docCost(d) {
+  return d.lines.reduce((s, l) => s + (Number(l.n) || 0) * (mat(l.mid)?.cost || 0), 0);
+}
 function docTotals(d) {
   let tax = 0, no = 0;
   d.lines.forEach(l => { const c = lineCalc(l); tax += c.taxSum; no += c.noSum; });
@@ -319,6 +322,7 @@ function lockedQty(mid) {
   if (S.draft) S.draft.lines.forEach(l => { if (l.mid === mid) n += Number(l.n) || 0; });
   return n;
 }
+const canSeeCost = () => S.user && S.user.scope === 'all';
 const mat = id => MATERIALS.find(m => m.id === id);
 const cli = id => CLIENTS.find(c => c.id === id);
 const avail = mid => { const m = mat(mid); return m ? m.stock - lockedQty(mid) : 0; };
@@ -346,7 +350,8 @@ function newDraft() {
   const today = new Date();
   const iso = today.toISOString().slice(0, 10);
   return {date: iso, clientId:'', sales: S.user.name, stock:'郑州公司仓',
-          contract:'', invoiceStatus:2, note:'', receiving:'', logistics:'', lines:[]};
+          contract:'', invoiceStatus:2, note:'', receiver:'', receiverPhone:'', receiverAddr:'',
+          carrier:'', lines:[]};
 }
 function toast(msg) {
   S.toast = msg;
@@ -536,7 +541,7 @@ function viewOutNew() {
           <b>${esc(m.brand)} ${esc(m.name)}</b>
           <span class="mono">${esc(m.sn)}</span> · ${esc(m.model)} · ${esc(m.unit)}
           <div class="stockinfo">可用库存 <b class="${av<=0?'low':''}">${qty(av)}</b> ${esc(m.unit)}
-            · 上次不含税进价 ${money(m.cost)}</div>
+            ${canSeeCost() ? '· 不含税成本 ' + money(m.cost) : ''}</div>
         </div>
       </td>
       <td class="cell r" style="width:96px"><input class="num" type="number" min="0" step="1" value="${l.n}" oninput="setLine(${i},'n',this.value)"></td>
@@ -614,12 +619,19 @@ function viewOutNew() {
 
   <div class="card pad" style="margin-top:14px">
     <div class="sec-title">发货与开票（选填）</div>
-    <div class="form-head" style="grid-template-columns:2fr 1fr 1fr">
-      <div class="field"><label>发货地址 / 收货人</label>
-        <input class="inp" value="${esc(d.receiving)}" placeholder="例如：河南省郑州市金水区…张工 13800000000"
-          oninput="S.draft.receiving=this.value"></div>
-      <div class="field"><label>物流公司</label>
-        <input class="inp" value="${esc(d.logistics)}" placeholder="选填" oninput="S.draft.logistics=this.value"></div>
+    <div class="form-head">
+      <div class="field"><label>收货人</label>
+        <input class="inp" value="${esc(d.receiver)}" placeholder="姓名"
+          oninput="S.draft.receiver=this.value"></div>
+      <div class="field"><label>收货电话</label>
+        <input class="inp" value="${esc(d.receiverPhone)}" placeholder="手机号"
+          oninput="S.draft.receiverPhone=this.value"></div>
+      <div class="field"><label>收货地址</label>
+        <input class="inp" value="${esc(d.receiverAddr)}" placeholder="省市区 + 详细地址"
+          oninput="S.draft.receiverAddr=this.value"></div>
+      <div class="field"><label>承运人</label>
+        <input class="inp" value="${esc(d.carrier)}" placeholder="如 京东快递 / 客户自提"
+          oninput="S.draft.carrier=this.value"></div>
       <div class="field"><label>发票状态</label>
         <select class="inp" onchange="S.draft.invoiceStatus=Number(this.value)">
           <option value="0" ${d.invoiceStatus===0?'selected':''}>发票暂不开</option>
@@ -627,6 +639,7 @@ function viewOutNew() {
           <option value="2" ${d.invoiceStatus===2?'selected':''}>发票随货开</option>
         </select></div>
     </div>
+    <div class="hint" style="margin-top:8px">承运人会打印在送货单上；收货信息打印时合并成一行。</div>
     <div class="field" style="margin-top:12px;max-width:640px"><label>单据备注</label>
       <input class="inp" value="${esc(d.note)}" placeholder="选填" oninput="S.draft.note=this.value"></div>
   </div>
@@ -664,7 +677,11 @@ function viewOutDetail() {
       <div class="field"><label>销售合同</label><div class="mono">${esc(d.contract || '—')}</div></div>
       <div class="field"><label>仓库</label><div>${esc(d.stock)}</div></div>
       <div class="field"><label>发起人</label><div>${esc(d.createBy)}</div></div>
+      <div class="field"><label>承运人</label><div>${esc(d.carrier || '—')}</div></div>
+      <div class="field"><label>发票状态</label><div>${d.invoiceStatus===0?'暂不开':d.invoiceStatus===1?'已开':'随货开'}</div></div>
     </div>
+    ${(d.receiver || d.receiverAddr) ? `<div class="hint" style="margin-top:10px">
+      收货：${esc(d.receiver || '—')} ${esc(d.receiverPhone || '')} · ${esc(d.receiverAddr || '')}</div>` : ''}
   </div>
 
   <div class="card" style="margin-bottom:14px">
@@ -682,9 +699,13 @@ function viewOutDetail() {
       </table>
     </div>
     <div class="total-bar" style="padding:12px 16px 14px">
+      ${canSeeCost() ? `<div><span>不含税成本</span><b>${money(docCost(d))}</b></div>
+      <div><span>毛利</span><b style="color:${docCost(d) > 0 ? 'var(--brand)' : 'var(--rust)'}">${money(t.no - docCost(d))}</b></div>
+      <div><span>毛利率</span><b>${t.no ? (100 * (t.no - docCost(d)) / t.no).toFixed(1) + '%' : '—'}</b></div>` : ''}
       <div><span>不含税总价</span><b>${money(t.no)}</b></div>
       <div><span>含税总价</span><b class="big">${money(t.tax)}</b></div>
     </div>
+    ${canSeeCost() ? '' : '<div class="hint" style="padding:0 16px 14px">成本与毛利仅管理员可见</div>'}
   </div>
 
   <div class="card pad">
@@ -719,7 +740,7 @@ function viewStock() {
   <div class="card"><div class="t-wrap"><table>
     <thead><tr><th>编号</th><th>品牌</th><th>名称</th><th>型号</th><th>单位</th>
       <th class="r">实存</th><th class="r">锁库</th><th class="r">可用</th>
-      <th class="r">最低</th><th class="r">不含税成本</th><th class="r">库存金额</th></tr></thead>
+      <th class="r">最低</th>${canSeeCost() ? '<th class="r">不含税成本</th><th class="r">库存金额</th>' : ''}</tr></thead>
     <tbody>${rows.map(m => {
       const av = avail(m.id), low = m.stock < m.min;
       return `<tr>
@@ -729,10 +750,10 @@ function viewStock() {
         <td class="r num" style="color:var(--muted)">${qty(lockedQty(m.id))}</td>
         <td class="r num"><b>${qty(av)}</b></td>
         <td class="r num" style="color:var(--faint)">${m.min}</td>
-        <td class="r num">${money(m.cost)}</td>
-        <td class="r num">${money(m.stock * m.cost)}</td>
+        ${canSeeCost() ? `<td class="r num">${money(m.cost)}</td>
+        <td class="r num">${money(m.stock * m.cost)}</td>` : ''}
       </tr>`;
-    }).join('') || `<tr><td colspan="11" class="empty">没有匹配的物料</td></tr>`}</tbody>
+    }).join('') || `<tr><td colspan="${canSeeCost()?11:9}" class="empty">没有匹配的物料</td></tr>`}</tbody>
   </table></div></div>`;
 }
 
@@ -875,7 +896,8 @@ function submitDraft() {
   docs.push({
     id: 'd' + Date.now(), sn, date: d.date, clientId: d.clientId, sales: d.sales,
     stock: '郑州公司仓', contract: d.contract, invoiceStatus: d.invoiceStatus,
-    status: 'wait', note: d.note, receiving: d.receiving, logistics: d.logistics,
+    status: 'wait', note: d.note, receiver: d.receiver, receiverPhone: d.receiverPhone,
+    receiverAddr: d.receiverAddr, carrier: d.carrier,
     createBy: S.user.name, lines: d.lines.map(l => ({mid: l.mid, n: Number(l.n), taxUnit: Number(l.taxUnit)}))
   });
   S.draft = null;
