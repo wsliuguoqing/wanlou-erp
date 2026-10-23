@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>万楼进销存 · 原型</title>
+<style>
+:root{
+  --ink:#16202B; --ink-2:#1E2B39; --ink-3:#2A3A4B;
+  --paper:#F5F6F4; --line:#DFE3DF; --line-2:#EDEFEC;
+  --text:#1B232B; --muted:#6B7681; --faint:#98A2AB;
+  --brand:#1F6E5A; --brand-soft:#E6F0EC;
+  --amber:#B9762B; --amber-soft:#FBF0E2;
+  --rust:#A8442A; --rust-soft:#FAE9E4;
+  --blue:#2C5C8A; --blue-soft:#E7EEF5;
+  --r:6px;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei","Hiragino Sans GB",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--sans);background:var(--paper);color:var(--text);font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.mono{font-family:var(--mono);font-size:12px;letter-spacing:-.2px}
+button{font-family:inherit;font-size:13px;cursor:pointer;border:none;background:none;color:inherit}
+input,select,textarea{font-family:inherit;font-size:13px;color:var(--text)}
+a{color:var(--brand);text-decoration:none}
+:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ---------- shell ---------- */
+.app{display:flex;min-height:100vh}
+.side{width:172px;background:var(--ink);flex:0 0 172px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.logo{padding:16px 16px 14px;border-bottom:1px solid rgba(255,255,255,.07)}
+.logo b{display:block;color:#fff;font-size:14px;letter-spacing:.5px;font-weight:600}
+.logo span{display:block;color:#7C8A97;font-size:10.5px;margin-top:2px;letter-spacing:.3px}
+.nav{overflow-y:auto;padding:6px 0 20px;flex:1}
+.nav-group{padding:12px 16px 4px;color:#5D6C7A;font-size:10.5px;letter-spacing:.6px}
+.nav a{display:flex;align-items:center;gap:8px;padding:7px 16px;color:#B8C4CE;font-size:12.5px;border-left:2px solid transparent}
+.nav a:hover{background:var(--ink-2);color:#fff}
+.nav a.on{background:var(--ink-2);color:#fff;border-left-color:#4FA88E}
+.nav a.disabled{color:#4E5C69;cursor:not-allowed}
+.nav a.disabled:hover{background:none}
+.dot{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.5}
+
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.top{height:48px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 20px;position:sticky;top:0;z-index:20}
+.crumb{color:var(--muted);font-size:12px}
+.crumb b{color:var(--text);font-weight:600}
+.spacer{flex:1}
+.role-switch{display:flex;align-items:center;gap:6px;background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:3px 4px 3px 8px}
+.role-switch select{border:none;background:none;padding:2px;font-size:12px}
+.who{font-size:12px;color:var(--muted)}
+.who b{color:var(--text);font-weight:600}
+.content{padding:18px 20px 40px;max-width:1400px;width:100%}
+
+/* ---------- primitives ---------- */
+h1.page{font-size:17px;font-weight:600;margin:0 0 2px;letter-spacing:.2px}
+.page-sub{color:var(--muted);font-size:12px;margin:0 0 14px}
+.row{display:flex;gap:10px;align-items:center}
+.btn{padding:6px 13px;border-radius:var(--r);border:1px solid var(--line);background:#fff;color:var(--text);font-size:12.5px;transition:background .12s}
+.btn:hover{background:#FAFBFA}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{background:#1A5E4D}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:5px 8px}
+.btn.ghost:hover{background:var(--line-2);color:var(--text)}
+.btn.sm{padding:3px 9px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.card{background:#fff;border:1px solid var(--line);border-radius:var(--r)}
+.pad{padding:14px 16px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field>label{font-size:11.5px;color:var(--muted)}
+.inp{border:1px solid var(--line);border-radius:var(--r);padding:6px 9px;background:#fff;min-width:0}
+.inp:focus{border-color:var(--brand);outline:none;box-shadow:0 0 0 3px var(--brand-soft)}
+.inp[readonly]{background:var(--paper);color:var(--muted)}
+
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:collapse}
+th{font-size:11.5px;font-weight:600;color:var(--muted);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);background:#FBFCFB;white-space:nowrap;position:sticky;top:0}
+td{padding:9px 12px;border-bottom:1px solid var(--line-2);vertical-align:middle}
+tbody tr:hover{background:#FCFDFC}
+td.r,th.r{text-align:right}
+.t-wrap{overflow:auto;max-height:calc(100vh - 220px)}
+
+.tag{display:inline-block;padding:1.5px 7px;border-radius:3px;font-size:11.5px;line-height:1.55;white-space:nowrap}
+.tag.wait{background:var(--amber-soft);color:var(--amber)}
+.tag.ok{background:var(--brand-soft);color:var(--brand)}
+.tag.no{background:var(--rust-soft);color:var(--rust)}
+.tag.info{background:var(--blue-soft);color:var(--blue)}
+.tag.mute{background:#F0F2F1;color:var(--muted)}
+
+/* ---------- form ---------- */
+.form-head{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px 14px}
+.sec-title{font-size:12px;font-weight:600;color:var(--text);margin:0 0 10px;display:flex;align-items:center;gap:8px}
+.sec-title:after{content:"";flex:1;height:1px;background:var(--line-2)}
+.lines{width:100%;border-collapse:collapse;margin-top:4px}
+.lines th{position:static;background:#F7F9F7;font-size:11px;padding:7px 8px}
+.lines td{padding:5px 8px;border-bottom:1px solid var(--line-2)}
+.lines .cell{padding:4px 6px}
+.lines input{border:1px solid transparent;background:transparent;border-radius:4px;padding:4px 6px;width:100%;text-align:right}
+.lines input:hover{border-color:var(--line)}
+.lines input:focus{border-color:var(--brand);background:#fff;outline:none;box-shadow:0 0 0 2px var(--brand-soft)}
+.lines input.text{text-align:left}
+.pick{display:block;width:100%;text-align:left;padding:5px 7px;border:1px dashed var(--line);border-radius:4px;color:var(--muted);font-size:12.5px;background:#fff}
+.pick:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
+.picked{font-size:12px;line-height:1.35}
+.picked b{display:block;font-weight:600;color:var(--text)}
+.picked span{color:var(--muted)}
+.stockinfo{font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap}
+.stockinfo b{font-weight:600;color:var(--brand)}
+.stockinfo b.low{color:var(--rust)}
+.rm{padding:2px 5px;color:var(--faint);border-radius:3px}
+.rm:hover{color:var(--rust);background:var(--rust-soft)}
+.total-bar{display:flex;justify-content:flex-end;gap:26px;padding:12px 4px 2px;align-items:baseline}
+.total-bar div{text-align:right}
+.total-bar span{display:block;font-size:11px;color:var(--muted)}
+.total-bar b{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.total-bar b.big{color:var(--brand);font-size:19px}
+
+.footbar{display:flex;gap:10px;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line-2)}
+.hint{font-size:11.5px;color:var(--faint)}
+
+/* ---------- modal ---------- */
+.mask{position:fixed;inset:0;background:rgba(22,32,43,.42);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:7vh}
+.modal{background:#fff;border-radius:8px;width:min(860px,94vw);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+.modal header{padding:13px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.modal header b{font-size:13.5px;font-weight:600}
+.modal .body{overflow:auto;padding:0}
+.modal footer{padding:11px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+.pick-row{cursor:pointer}
+.pick-row:hover{background:var(--brand-soft)}
+.x{margin-left:auto;font-size:16px;color:var(--faint);padding:2px 6px;border-radius:4px}
+.x:hover{background:var(--line-2);color:var(--text)}
+
+/* ---------- login ---------- */
+.login{min-height:100vh;display:grid;grid-template-columns:1fr 400px}
+.login .left{background:var(--ink);color:#fff;padding:52px 56px;display:flex;flex-direction:column;justify-content:space-between}
+.login .left h2{font-size:30px;line-height:1.28;margin:0;font-weight:600;letter-spacing:.5px;max-width:15em}
+.login .left h2 em{font-style:normal;color:#7FC3AE}
+.login .left p{color:#93A2AF;font-size:12.5px;max-width:30em;margin:16px 0 0}
+.login .foot{color:#5D6C7A;font-size:11.5px}
+.login .right{background:#fff;padding:52px 40px;display:flex;flex-direction:column;justify-content:center}
+.login .right h3{font-size:15px;margin:0 0 4px;font-weight:600}
+.login .right p{color:var(--muted);font-size:12px;margin:0 0 22px}
+.login .field{margin-bottom:13px}
+.login .inp{padding:9px 11px;font-size:13.5px}
+.login .btn{width:100%;justify-content:center;padding:9px;font-size:13.5px}
+.demo-users{margin-top:26px;border-top:1px solid var(--line-2);padding-top:14px}
+.demo-users div{font-size:11.5px;color:var(--muted);margin-bottom:7px}
+.demo-user{display:flex;width:100%;justify-content:space-between;padding:6px 9px;border:1px solid var(--line);border-radius:var(--r);margin-bottom:5px;font-size:12px}
+.demo-user:hover{border-color:var(--brand);background:var(--brand-soft)}
+
+/* ---------- mobile scan ---------- */
+.scan-wrap{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
+.phone{width:300px;background:#fff;border:1px solid var(--line);border-radius:22px;padding:12px;box-shadow:0 8px 24px rgba(22,32,43,.08)}
+.phone .cam{background:#0D1419;border-radius:12px;height:190px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.cam .frame{width:150px;height:110px;border:1.5px solid rgba(127,195,174,.75);border-radius:6px;position:relative}
+.cam .laser{position:absolute;left:6px;right:6px;height:1.5px;background:#7FC3AE;box-shadow:0 0 8px #7FC3AE;animation:scan 2.2s ease-in-out infinite}
+@keyframes scan{0%,100%{top:12px}50%{top:96px}}
+.cam small{position:absolute;bottom:8px;color:#7C8A97;font-size:10px}
+.phone .list{margin-top:10px}
+.phone .line{display:flex;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--line-2);font-size:12px}
+.phone .line small{color:var(--muted);display:block}
+.phone .btns{display:flex;gap:6px;margin-top:10px}
+.phone .btns .btn{flex:1;text-align:center;padding:7px 0;font-size:12px}
+.aside-note{flex:1;min-width:260px;font-size:12.5px;color:var(--muted);line-height:1.75}
+.aside-note h4{font-size:13px;color:var(--text);margin:0 0 8px;font-weight:600}
+.aside-note code{font-family:var(--mono);background:var(--paper);padding:1px 5px;border-radius:3px;font-size:11.5px;color:var(--text)}
+
+.banner{background:var(--blue-soft);border:1px solid #CFDFEE;color:#24507A;border-radius:var(--r);padding:8px 12px;font-size:12px;margin-bottom:14px;display:flex;gap:8px;align-items:center}
+.banner b{font-weight:600}
+.empty{text-align:center;color:var(--faint);padding:46px 10px;font-size:12.5px}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:9px 16px;border-radius:var(--r);font-size:12.5px;z-index:80;box-shadow:0 6px 20px rgba(0,0,0,.2)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="overlay"></div>
+<script>
+/* =========================================================
+   万楼进销存 · 出库单主线原型
+   数据全部在内存，刷新即重置。仅用于流程验证。
+   ========================================================= */
+
+const RATE = 13;
+const money = n => (Math.round(n * 100) / 100).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const qty = n => (Math.round(n * 1000) / 1000).toLocaleString('zh-CN');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- 用户与角色 ---------- */
+const USERS = [
+  {id:'u1', name:'刘国庆', login:'hnwl', role:'管理员', scope:'all'},
+  {id:'u2', name:'朱俊青', login:'zhujunqing', role:'销售', scope:'own'},
+  {id:'u3', name:'夏安康', login:'xiaankang', role:'库管', scope:'audit'}
+];
+
+/* ---------- 基础资料 ---------- */
+const BRANDS = ['3M','德乐','沃尔','上升','中垒','ABB','国产','长园'];
+const UNITS = ['套','个','箱','米','卷','包','付'];
+
+const MATERIALS = [
+  {id:'m01', sn:'10001004', brand:'3M',   name:'10kV三芯户内终端',        model:'5623PST-G-CN',      unit:'箱', barcode:'6901234500017', stock:171, cost:496.90, min:20, max:400, price:690.00},
+  {id:'m02', sn:'10001005', brand:'3M',   name:'10kV三芯户内终端',        model:'5624PST-G1-CN',     unit:'箱', barcode:'6901234500024', stock:178, cost:592.29, min:20, max:400, price:820.00},
+  {id:'m03', sn:'10001006', brand:'3M',   name:'10kV三芯户内终端',        model:'5624PST-G2-CN',     unit:'箱', barcode:'6901234500031', stock:267, cost:624.97, min:20, max:400, price:860.00},
+  {id:'m04', sn:'10001007', brand:'3M',   name:'10kV三芯户内终端',        model:'5625PST-G-CN',      unit:'箱', barcode:'6901234500048', stock:96,  cost:688.30, min:15, max:300, price:940.00},
+  {id:'m05', sn:'10001008', brand:'3M',   name:'10kV单芯户内终端',        model:'5623K-CN',          unit:'套', barcode:'6901234500055', stock:212, cost:318.40, min:30, max:500, price:450.00},
+  {id:'m06', sn:'30013112', brand:'德乐', name:'10kV冷缩三芯户内终端',    model:'德乐NLS-15/3.1(25-50)', unit:'套', barcode:'6970453301129', stock:64, cost:186.20, min:20, max:300, price:268.00},
+  {id:'m07', sn:'0013030',  brand:'德乐', name:'德乐低压热缩终端',        model:'SY-1/4.2（70-120）', unit:'套', barcode:'6970453001304', stock:12, cost:42.80,  min:30, max:400, price:65.00},
+  {id:'m08', sn:'0043179',  brand:'上升', name:'钎焊铜铝端子',            model:'DTLQ-95',           unit:'个', barcode:'6930017004319', stock:1840,cost:8.65,   min:200,max:3000,price:13.50},
+  {id:'m09', sn:'0043231',  brand:'上升', name:'钎焊铜铝端子',            model:'DTL-S-240',         unit:'个', barcode:'6930017004326', stock:620, cost:22.40,  min:100,max:1500,price:34.00},
+  {id:'m10', sn:'4000120',  brand:'沃尔', name:'沃尔10kV冷缩三芯户内终端150-240', model:'沃尔150-240', unit:'套', barcode:'6971488001203', stock:88, cost:283.19, min:20, max:200, price:396.00},
+  {id:'m11', sn:'4000121',  brand:'沃尔', name:'沃尔10kV三芯户内终端25-50', model:'沃尔25-50',    unit:'套', barcode:'6971488001210', stock:53, cost:245.13, min:20, max:200, price:342.00},
+  {id:'m12', sn:'5000031',  brand:'中垒', name:'热缩管母排盒',            model:'ZLM-10/3',          unit:'付', barcode:'6950334000311', stock:340, cost:36.50,  min:50, max:600, price:56.00},
+  {id:'m13', sn:'6000118',  brand:'ABB',  name:'冷缩中间接头',            model:'CSTI-15/3',         unit:'套', barcode:'6907822001185', stock:27, cost:742.60, min:10, max:120, price:1020.00},
+  {id:'m14', sn:'7000205',  brand:'长园', name:'绝缘热缩带',              model:'CY-50mm',           unit:'卷', barcode:'6923445002052', stock:410, cost:18.90,  min:50, max:800, price:29.00}
+];
+
+const CLIENTS = [
+  {id:'c01', sn:'C000052024052800001', name:'武汉鑫骏沙商贸有限公司',     region:'湖北武汉', sales:'朱俊青', level:'L1', credit:100000},
+  {id:'c02', sn:'C000052024052800002', name:'万楼淘宝店',                 region:'河南郑州', sales:'朱俊青', level:'L1', credit:0},
+  {id:'c03', sn:'C000052024052800003', name:'重庆九度机电设备有限公司',   region:'重庆',     sales:'夏安康', level:'L1', credit:80000},
+  {id:'c04', sn:'C000052024060100004', name:'山东明尔信电气有限公司',     region:'山东济南', sales:'夏安康', level:'L2', credit:60000},
+  {id:'c05', sn:'C000052024060100005', name:'罗定天玑星',                 region:'广东云浮', sales:'朱俊青', level:'L1', credit:0},
+  {id:'c06', sn:'C000052024060100006', name:'陕西杰创自动化有限公司',     region:'陕西西安', sales:'夏天行', level:'L1', credit:150000},
+  {id:'c07', sn:'C000052024060100007', name:'江苏通光电子线缆股份有限公司', region:'江苏南通', sales:'杨莉',   level:'L2', credit:200000},
+  {id:'c08', sn:'C000052024060100008', name:'郑州深沃电气科技有限公司',   region:'河南郑州', sales:'朱俊青', level:'L1', credit:50000}
+];
+
+const SUPPLIERS = [
+  {id:'s06', sn:'3006', name:'郑州深沃电气科技有限公司'},
+  {id:'s02', sn:'3002', name:'宁波豪洋高新物资有限公司'},
+  {id:'s01', sn:'3001', name:'郑州龙升机电设备有限公司'},
+  {id:'s10', sn:'3010', name:'温州上升电力科技有限公司'}
+];
+
+/* ---------- 初始单据 ---------- */
+let DOC_SEQ = 2712;
+const ledgers = [];
+
+const docs = [
+  {id:'d1', sn:'hnwlo000052026102102711', date:'2026-10-21', clientId:'c05', sales:'朱俊青', stock:'郑州公司仓',
+   contract:'HNWLS00120261014031', invoiceStatus:2, status:'ok', note:'客户自提', createBy:'朱俊青', auditBy:'刘国庆',
+   lines:[{mid:'m01', n:6, taxUnit:690}, {mid:'m08', n:120, taxUnit:13.5}]},
+  {id:'d2', sn:'hnwlo000052026102102710', date:'2026-10-21', clientId:'c05', sales:'朱俊青', stock:'郑州公司仓',
+   contract:'HNWLS00420261009021', invoiceStatus:0, status:'ok', note:'', createBy:'朱俊青', auditBy:'刘国庆',
+   lines:[{mid:'m02', n:8, taxUnit:820}, {mid:'m05', n:4, taxUnit:450}]},
+  {id:'d3', sn:'hnwlo000052026102102709', date:'2026-10-21', clientId:'c04', sales:'夏安康', stock:'郑州公司仓',
+   contract:'HNWLS00420261021011', invoiceStatus:1, status:'wait', note:'等客户确认收货地址', createBy:'夏安康',
+   lines:[{mid:'m06', n:14, taxUnit:268}]},
+  {id:'d4', sn:'hnwlo000052026102002708', date:'2026-10-20', clientId:'c01', sales:'朱俊青', stock:'郑州公司仓',
+   contract:'HNWLS00120261020027', invoiceStatus:0, status:'wait', note:'', createBy:'朱俊青',
+   lines:[{mid:'m03', n:10, taxUnit:860}, {mid:'m09', n:50, taxUnit:34}]},
+  {id:'d5', sn:'hnwlo000052026101902705', date:'2026-10-19', clientId:'c06', sales:'夏天行', stock:'郑州公司仓',
+   contract:'HNWLS01720261019012', invoiceStatus:2, status:'no', note:'', createBy:'夏天行', auditBy:'刘国庆',
+   auditReason:'客户要求改型号，驳回重开', lines:[{mid:'m13', n:2, taxUnit:1020}]},
+  {id:'d6', sn:'hnwlo000052026101802702', date:'2026-10-18', clientId:'c07', sales:'杨莉', stock:'郑州公司仓',
+   contract:'HNWLS01320261018008', invoiceStatus:1, status:'ok', note:'随车发货', createBy:'杨莉', auditBy:'刘国庆',
+   lines:[{mid:'m04', n:3, taxUnit:940}, {mid:'m14', n:40, taxUnit:29}]}
+];
+
+/* 已审核单据的库存已扣，这里同步扣掉，避免演示数字对不上 */
+docs.filter(d => d.status === 'ok').forEach(d => {
+  d.lines.forEach(l => {
+    const m = MATERIALS.find(x => x.id === l.mid);
+    if (m) { m.stock -= l.n; ledgers.push({date:d.date, sn:d.sn, mid:l.mid, n:-l.n, after:m.stock}); }
+  });
+});
+
+/* ---------- 状态 ---------- */
+const S = {
+  user: null,
+  view: 'out-list',       // out-list | out-new | out-detail | stock | scan
+  detailId: null,
+  draft: null,
+  stockKw: '',
+  docStatus: '',
+  toast: null
+};
+
+/* ---------- 计算 ---------- */
+function lineCalc(l) {
+  const q = Number(l.n) || 0;
+  const t = Number(l.taxUnit) || 0;
+  const taxSum = q * t;
+  const noUnit = t / (1 + RATE / 100);
+  return {q, taxUnit: t, taxSum, noUnit, noSum: taxSum / (1 + RATE / 100)};
+}
+function docTotals(d) {
+  let tax = 0, no = 0;
+  d.lines.forEach(l => { const c = lineCalc(l); tax += c.taxSum; no += c.noSum; });
+  return {tax, no};
+}
+/* 可用 = 实存 - 待审核单据占用 */
+function lockedQty(mid) {
+  let n = 0;
+  docs.filter(d => d.status === 'wait').forEach(d => d.lines.forEach(l => { if (l.mid === mid) n += Number(l.n) || 0; }));
+  if (S.draft) S.draft.lines.forEach(l => { if (l.mid === mid) n += Number(l.n) || 0; });
+  return n;
+}
+const mat = id => MATERIALS.find(m => m.id === id);
+const cli = id => CLIENTS.find(c => c.id === id);
+const avail = mid => { const m = mat(mid); return m ? m.stock - lockedQty(mid) : 0; };
+
+/* 数据级权限：销售只看自己的 */
+function visibleDocs() {
+  if (S.user.scope === 'all') return docs;
+  if (S.user.scope === 'audit') return docs;
+  return docs.filter(d => d.sales === S.user.name || d.createBy === S.user.name);
+}
+function visibleClients() {
+  if (S.user.scope === 'own') return CLIENTS.filter(c => c.sales === S.user.name);
+  return CLIENTS;
+}
+
+/* ---------- 路由 ---------- */
+function go(view, id) {
+  S.view = view;
+  if (id !== undefined) S.detailId = id;
+  if (view === 'out-new' && !S.draft) S.draft = newDraft();
+  render();
+  window.scrollTo(0, 0);
+}
+function newDraft() {
+  const today = new Date();
+  const iso = today.toISOString().slice(0, 10);
+  return {date: iso, clientId:'', sales: S.user.name, stock:'郑州公司仓',
+          contract:'', invoiceStatus:2, note:'', receiving:'', logistics:'', lines:[]};
+}
+function toast(msg) {
+  S.toast = msg;
+  render();
+  setTimeout(() => { S.toast = null; render(); }, 2200);
+}
+
+/* =========================================================
+   渲染
+   ========================================================= */
+function render() {
+  const root = document.getElementById('root');
+  if (!S.user) { root.innerHTML = viewLogin(); return; }
+  root.innerHTML = `<div class="app">
+    ${viewSide()}
+    <div class="main">
+      ${viewTop()}
+      <div class="content">${viewBody()}</div>
+    </div>
+  </div>${S.toast ? `<div class="toast">${esc(S.toast)}</div>` : ''}`;
+  document.getElementById('overlay').innerHTML = '';
+}
+
+/* ---------- 登录 ---------- */
+function viewLogin() {
+  return `<div class="login">
+    <div class="left">
+      <div>
+        <h2>把每一张出库单<br>变成<em>可追溯的账</em></h2>
+        <p>河南万楼商贸有限公司 · 进销存系统原型。这里用假数据演示新系统的出库流程、数据权限与扫码开单，供你验证字段和操作顺序。</p>
+      </div>
+      <div class="foot">原型 v0.1 · 数据仅存在于当前页面，刷新即恢复</div>
+    </div>
+    <div class="right">
+      <h3>登录</h3>
+      <p>选择一个身份进入，菜单和能看到的数据会随之变化。</p>
+      <div class="field"><label>用户名</label><input class="inp" id="lg-u" value="hnwl"></div>
+      <div class="field"><label>密码</label><input class="inp" type="password" id="lg-p" value="123456"></div>
+      <button class="btn primary" onclick="doLogin()">登录</button>
+      <div class="demo-users">
+        <div>快速切换身份（密码任意）</div>
+        ${USERS.map(u => `<button class="demo-user" onclick="loginAs('${u.id}')">
+          <span>${esc(u.name)} · ${esc(u.role)}</span><span class="mono">${esc(u.login)}</span></button>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+function loginAs(id) { S.user = USERS.find(u => u.id === id); S.view = 'out-list'; render(); }
+function doLogin() {
+  const name = document.getElementById('lg-u').value.trim();
+  const u = USERS.find(x => x.login === name) || USERS[0];
+  S.user = u; S.view = 'out-list'; render();
+}
+
+/* ---------- 侧边栏 ---------- */
+function viewSide() {
+  const u = S.user;
+  const can = S.view;
+  const item = (label, view, role) => {
+    const locked = role && role !== u.scope;
+    return `<a href="#" class="${can===view?'on':''} ${locked?'disabled':''}"
+      ${locked?'':`onclick="go('${view}');return false;"`}>${label}</a>`;
+  };
+  return `<aside class="side">
+    <div class="logo"><b>万楼进销存</b><span>河南万楼商贸有限公司</span></div>
+    <nav class="nav">
+      <div class="nav-group">库存</div>
+      ${item('出库单','out-list')}
+      ${item('新建出库单','out-new')}
+      ${item('库存查询','stock')}
+      ${item('扫码出库','scan')}
+      <div class="nav-group">基础资料</div>
+      <a href="#" class="disabled">入库单</a>
+      <a href="#" class="disabled">客户管理</a>
+      <a href="#" class="disabled">物料管理</a>
+      <a href="#" class="disabled">供应商管理</a>
+      <div class="nav-group">报表</div>
+      <a href="#" class="disabled">收发存汇总</a>
+      <a href="#" class="disabled">应收账款</a>
+      <div class="nav-group">系统</div>
+      <a href="#" class="disabled">用户与角色</a>
+      <a href="#" class="disabled">审批流程</a>
+    </nav>
+  </aside>`;
+}
+function viewTop() {
+  const titles = {'out-list':'出库单','out-new':'新建出库单','out-detail':'出库单详情','stock':'库存查询','scan':'扫码出库'};
+  const u = S.user;
+  return `<div class="top">
+    <div class="crumb">库存 / <b>${titles[S.view] || ''}</b></div>
+    <div class="spacer"></div>
+    <div class="role-switch">
+      <span class="who">切换身份</span>
+      <select onchange="loginAs(this.value)">
+        ${USERS.map(x => `<option value="${x.id}" ${x.id===u.id?'selected':''}>${esc(x.name)} · ${esc(x.role)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="who">当前：<b>${esc(u.name)}</b>（${esc(u.role)}）</div>
+    <button class="btn ghost" onclick="S.user=null;render()">退出</button>
+  </div>`;
+}
+
+function viewBody() {
+  if (S.view === 'out-list') return viewOutList();
+  if (S.view === 'out-new') return viewOutNew();
+  if (S.view === 'out-detail') return viewOutDetail();
+  if (S.view === 'stock') return viewStock();
+  if (S.view === 'scan') return viewScan();
+  return '';
+}
+
+/* ---------- 出库单列表 ---------- */
+function viewOutList() {
+  const u = S.user;
+  let list = visibleDocs();
+  if (S.docStatus) list = list.filter(d => d.status === S.docStatus);
+  list = list.slice().sort((a, b) => b.sn.localeCompare(a.sn));
+  const stTag = s => s === 'ok' ? '<span class="tag ok">审核通过</span>'
+    : s === 'no' ? '<span class="tag no">审核驳回</span>' : '<span class="tag wait">待审核</span>';
+  const invTag = i => i === 0 ? '<span class="tag mute">暂不开票</span>'
+    : i === 1 ? '<span class="tag info">已开票</span>' : '<span class="tag mute">随货开</span>';
+
+  const banner = u.scope === 'own'
+    ? `<div class="banner"><b>销售权限</b>当前身份是销售「${esc(u.name)}」，只能看到自己负责的客户和单据。切到管理员可以看全部。</div>`
+    : u.scope === 'audit'
+    ? `<div class="banner"><b>库管权限</b>能看到全部单据，但只有审核和扫码权限，不能改客户资料和价格。</div>`
+    : `<div class="banner"><b>管理员权限</b>全部客户、全部单据、全部价格可见，可审核可改。</div>`;
+
+  return `${banner}
+  <h1 class="page">出库单</h1>
+  <p class="page-sub">共 ${list.length} 张单据${u.scope==='own'?'（我的）':'（全部）'}。点单号看详情，待审核的可以审核。</p>
+  <div class="toolbar">
+    <select class="inp" onchange="S.docStatus=this.value;render()">
+      <option value="">全部状态</option>
+      <option value="wait" ${S.docStatus==='wait'?'selected':''}>待审核</option>
+      <option value="ok" ${S.docStatus==='ok'?'selected':''}>审核通过</option>
+      <option value="no" ${S.docStatus==='no'?'selected':''}>审核驳回</option>
+    </select>
+    <div class="spacer"></div>
+    <button class="btn primary" onclick="S.draft=null;go('out-new')">新建出库单</button>
+  </div>
+  <div class="card">
+    <div class="t-wrap">
+      <table>
+        <thead><tr>
+          <th>出库单号</th><th>出库日期</th><th>客户</th><th>销售</th><th>销售合同</th>
+          <th>状态</th><th>发票</th><th class="r">含税总价</th><th class="r">不含税</th><th>发起人</th>
+        </tr></thead>
+        <tbody>
+        ${list.length ? list.map(d => {
+          const t = docTotals(d);
+          return `<tr>
+            <td><a href="#" class="mono" onclick="go('out-detail','${d.id}');return false;">${esc(d.sn)}</a></td>
+            <td class="num">${esc(d.date)}</td>
+            <td>${esc(cli(d.clientId)?.name || '—')}</td>
+            <td>${esc(d.sales)}</td>
+            <td class="mono">${esc(d.contract || '—')}</td>
+            <td>${stTag(d.status)}</td>
+            <td>${invTag(d.invoiceStatus)}</td>
+            <td class="r num"><b>${money(t.tax)}</b></td>
+            <td class="r num" style="color:var(--muted)">${money(t.no)}</td>
+            <td>${esc(d.createBy)}</td>
+          </tr>`;
+        }).join('') : `<tr><td colspan="10" class="empty">这个筛选下没有单据</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+/* ---------- 新建出库单 ---------- */
+function viewOutNew() {
+  const d = S.draft;
+  const myClients = visibleClients();
+  const client = cli(d.clientId);
+  const totals = docTotals(d);
+  const canEdit = true;
+
+  const lineRows = d.lines.map((l, i) => {
+    const m = mat(l.mid);
+    const c = lineCalc(l);
+    const av = avail(l.mid);
+    return `<tr>
+      <td style="width:26px;color:var(--faint)" class="num">${i+1}</td>
+      <td style="min-width:210px">
+        <div class="picked">
+          <b>${esc(m.brand)} ${esc(m.name)}</b>
+          <span class="mono">${esc(m.sn)}</span> · ${esc(m.model)} · ${esc(m.unit)}
+          <div class="stockinfo">可用库存 <b class="${av<=0?'low':''}">${qty(av)}</b> ${esc(m.unit)}
+            · 上次不含税进价 ${money(m.cost)}</div>
+        </div>
+      </td>
+      <td class="cell r" style="width:96px"><input class="num" type="number" min="0" step="1" value="${l.n}" oninput="setLine(${i},'n',this.value)"></td>
+      <td class="cell r" style="width:104px"><input class="num" type="number" min="0" step="0.01" value="${l.taxUnit}" oninput="setLine(${i},'taxUnit',this.value)"></td>
+      <td class="r num" style="width:110px;color:var(--muted)">${money(c.noUnit)}</td>
+      <td class="r num" style="width:112px"><b>${money(c.taxSum)}</b></td>
+      <td class="r num" style="width:112px;color:var(--muted)">${money(c.noSum)}</td>
+      <td style="width:34px"><button class="rm" title="删除这一行" onclick="delLine(${i})">✕</button></td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="row" style="margin-bottom:12px">
+    <h1 class="page" style="margin:0">新建出库单</h1>
+    <span class="hint">运费、物流、开票信息都可以先空着，审核前补齐即可</span>
+    <div class="spacer"></div>
+    <button class="btn" onclick="S.draft=null;go('out-list')">取消</button>
+  </div>
+
+  <div class="card pad" style="margin-bottom:14px">
+    <div class="sec-title">表头</div>
+    <div class="form-head">
+      <div class="field"><label>出库日期 *</label>
+        <input class="inp" type="date" value="${d.date}" onchange="S.draft.date=this.value;render()"></div>
+      <div class="field"><label>仓库 *</label>
+        <select class="inp"><option>郑州公司仓</option></select></div>
+      <div class="field"><label>客户 *</label>
+        <select class="inp" onchange="S.draft.clientId=this.value;render()">
+          <option value="">请选择客户</option>
+          ${myClients.map(c => `<option value="${c.id}" ${c.id===d.clientId?'selected':''}>${esc(c.name)}（${esc(c.level)}）</option>`).join('')}
+        </select></div>
+      <div class="field"><label>销售员 *</label>
+        <select class="inp" onchange="S.draft.sales=this.value;render()">
+          ${USERS.map(x => `<option ${x.name===d.sales?'selected':''}>${esc(x.name)}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>销售合同号</label>
+        <input class="inp mono" value="${esc(d.contract)}" placeholder="可留空" oninput="S.draft.contract=this.value"></div>
+      <div class="field"><label>税率</label>
+        <input class="inp" value="13%" readonly></div>
+    </div>
+    ${client ? `<div class="hint" style="margin-top:10px">收货信息：${esc(client.region)} · 负责销售 ${esc(client.sales)} · 资信额度 ${money(client.credit)} 元</div>` : ''}
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="pad" style="padding-bottom:0">
+      <div class="sec-title">明细</div>
+    </div>
+    <div style="overflow:auto">
+      <table class="lines">
+        <thead><tr>
+          <th style="width:26px"></th><th>商品（编号 / 型号 / 单位）</th>
+          <th class="r" style="width:96px">数量</th>
+          <th class="r" style="width:104px">含税单价</th>
+          <th class="r" style="width:110px">不含税单价</th>
+          <th class="r" style="width:112px">含税总价</th>
+          <th class="r" style="width:112px">不含税总价</th>
+          <th style="width:34px"></th>
+        </tr></thead>
+        <tbody>
+          ${lineRows || `<tr><td colspan="8" class="empty" style="padding:26px">
+            还没有商品。点下面的「添加商品」，可以用编号、名称、型号或条码搜。</td></tr>`}
+          <tr><td colspan="8" style="padding:8px 10px">
+            <button class="btn sm" onclick="openPicker()">＋ 添加商品</button>
+            <span class="hint" style="margin-left:10px">填数量和一个价格，另一个价格会按 13% 自动算出来</span>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="total-bar">
+    <div><span>不含税总价</span><b>${money(totals.no)}</b></div>
+    <div><span>含税总价</span><b class="big">${money(totals.tax)}</b></div>
+  </div>
+
+  <div class="card pad" style="margin-top:14px">
+    <div class="sec-title">发货与开票（选填）</div>
+    <div class="form-head" style="grid-template-columns:2fr 1fr 1fr">
+      <div class="field"><label>发货地址 / 收货人</label>
+        <input class="inp" value="${esc(d.receiving)}" placeholder="例如：河南省郑州市金水区…张工 13800000000"
+          oninput="S.draft.receiving=this.value"></div>
+      <div class="field"><label>物流公司</label>
+        <input class="inp" value="${esc(d.logistics)}" placeholder="选填" oninput="S.draft.logistics=this.value"></div>
+      <div class="field"><label>发票状态</label>
+        <select class="inp" onchange="S.draft.invoiceStatus=Number(this.value)">
+          <option value="0" ${d.invoiceStatus===0?'selected':''}>发票暂不开</option>
+          <option value="1" ${d.invoiceStatus===1?'selected':''}>发票已开</option>
+          <option value="2" ${d.invoiceStatus===2?'selected':''}>发票随货开</option>
+        </select></div>
+    </div>
+    <div class="field" style="margin-top:12px;max-width:640px"><label>单据备注</label>
+      <input class="inp" value="${esc(d.note)}" placeholder="选填" oninput="S.draft.note=this.value"></div>
+  </div>
+
+  <div class="footbar">
+    <button class="btn primary" onclick="submitDraft()">提交审批</button>
+    <button class="btn" onclick="S.draft=null;go('out-list')">取消</button>
+    <span class="hint">提交后状态为「待审核」，库存立刻显示为锁库占用；审核通过才真正扣减。</span>
+  </div>`;
+}
+
+/* ---------- 单据详情 ---------- */
+function viewOutDetail() {
+  const d = docs.find(x => x.id === S.detailId);
+  if (!d) return '<div class="empty">单据不存在</div>';
+  const t = docTotals(d);
+  const client = cli(d.clientId);
+  const stTag = d.status === 'ok' ? '<span class="tag ok">审核通过</span>'
+    : d.status === 'no' ? '<span class="tag no">审核驳回</span>' : '<span class="tag wait">待审核</span>';
+  const canAudit = S.user.scope !== 'own' && d.status === 'wait';
+
+  return `
+  <div class="row" style="margin-bottom:12px">
+    <h1 class="page" style="margin:0">${esc(d.sn)}</h1>
+    ${stTag}
+    <div class="spacer"></div>
+    <button class="btn" onclick="go('out-list')">返回列表</button>
+  </div>
+
+  <div class="card pad" style="margin-bottom:14px">
+    <div class="form-head">
+      <div class="field"><label>出库日期</label><div class="num">${esc(d.date)}</div></div>
+      <div class="field"><label>客户</label><div>${esc(client?.name || '—')}</div></div>
+      <div class="field"><label>销售员</label><div>${esc(d.sales)}</div></div>
+      <div class="field"><label>销售合同</label><div class="mono">${esc(d.contract || '—')}</div></div>
+      <div class="field"><label>仓库</label><div>${esc(d.stock)}</div></div>
+      <div class="field"><label>发起人</label><div>${esc(d.createBy)}</div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="t-wrap" style="max-height:none">
+      <table>
+        <thead><tr><th>品牌</th><th>名称</th><th>型号</th><th>单位</th>
+          <th class="r">数量</th><th class="r">含税单价</th><th class="r">含税总价</th><th class="r">不含税总价</th></tr></thead>
+        <tbody>${d.lines.map(l => {
+          const m = mat(l.mid), c = lineCalc(l);
+          return `<tr><td>${esc(m.brand)}</td><td>${esc(m.name)}</td>
+            <td class="mono">${esc(m.model)}</td><td>${esc(m.unit)}</td>
+            <td class="r num">${qty(c.q)}</td><td class="r num">${money(c.taxUnit)}</td>
+            <td class="r num"><b>${money(c.taxSum)}</b></td><td class="r num" style="color:var(--muted)">${money(c.noSum)}</td></tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+    <div class="total-bar" style="padding:12px 16px 14px">
+      <div><span>不含税总价</span><b>${money(t.no)}</b></div>
+      <div><span>含税总价</span><b class="big">${money(t.tax)}</b></div>
+    </div>
+  </div>
+
+  <div class="card pad">
+    <div class="sec-title">审批轨迹</div>
+    <div style="font-size:12.5px;color:var(--muted);line-height:2">
+      节点 1 · 出库单申请 — ${esc(d.createBy)} 提交于 ${esc(d.date)}<br>
+      节点 2 · 出库单审核 — ${d.status === 'wait' ? '等待审核人中' :
+        `${esc(d.auditBy || '—')} ${d.status === 'ok' ? '审核通过' : '审核驳回'}
+         ${d.auditReason ? `<span style="color:var(--rust)">理由：${esc(d.auditReason)}</span>` : ''}`}
+    </div>
+    ${canAudit ? `<div class="footbar">
+      <button class="btn primary" onclick="auditDoc('${d.id}','ok')">审核通过并扣库存</button>
+      <button class="btn" onclick="auditDoc('${d.id}','no')">驳回</button>
+      <span class="hint">审核通过后，库存数量立即减少，并写入库存流水</span>
+    </div>` : ''}
+  </div>`;
+}
+
+/* ---------- 库存查询 ---------- */
+function viewStock() {
+  const kw = S.stockKw.trim().toLowerCase();
+  const rows = MATERIALS.filter(m => !kw || [m.sn, m.name, m.model, m.brand, m.barcode]
+    .join(' ').toLowerCase().includes(kw));
+  return `
+  <h1 class="page">库存查询</h1>
+  <p class="page-sub">可用数量 = 实存 − 待审核单据占用。低于最低库存的会标红。</p>
+  <div class="toolbar">
+    <input class="inp" style="width:280px" placeholder="搜编号、名称、型号、品牌或扫条码"
+      value="${esc(S.stockKw)}" oninput="S.stockKw=this.value;render()">
+    <span class="hint">${rows.length} 个物料</span>
+  </div>
+  <div class="card"><div class="t-wrap"><table>
+    <thead><tr><th>编号</th><th>品牌</th><th>名称</th><th>型号</th><th>单位</th>
+      <th class="r">实存</th><th class="r">锁库</th><th class="r">可用</th>
+      <th class="r">最低</th><th class="r">不含税成本</th><th class="r">库存金额</th></tr></thead>
+    <tbody>${rows.map(m => {
+      const av = avail(m.id), low = m.stock < m.min;
+      return `<tr>
+        <td class="mono">${esc(m.sn)}</td><td>${esc(m.brand)}</td><td>${esc(m.name)}</td>
+        <td class="mono">${esc(m.model)}</td><td>${esc(m.unit)}</td>
+        <td class="r num" style="${low?'color:var(--rust);font-weight:600':''}">${qty(m.stock)}</td>
+        <td class="r num" style="color:var(--muted)">${qty(lockedQty(m.id))}</td>
+        <td class="r num"><b>${qty(av)}</b></td>
+        <td class="r num" style="color:var(--faint)">${m.min}</td>
+        <td class="r num">${money(m.cost)}</td>
+        <td class="r num">${money(m.stock * m.cost)}</td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="11" class="empty">没有匹配的物料</td></tr>`}</tbody>
+  </table></div></div>`;
+}
+
+/* ---------- 扫码出库（手机端模拟） ---------- */
+function viewScan() {
+  const picked = S.scanCart || (S.scanCart = []);
+  return `
+  <h1 class="page">扫码出库</h1>
+  <p class="page-sub">库管在仓库拿手机扫商品条码，逐件累积，最后一次性生成出库单。</p>
+  <div class="scan-wrap">
+    <div class="phone">
+      <div class="cam">
+        <div class="frame"><div class="laser"></div></div>
+        <small>对准条码 · 自动识别</small>
+      </div>
+      <div class="btns">
+        <button class="btn" onclick="simScan()">模拟扫一次</button>
+        <button class="btn" onclick="openPicker(true)">手动选</button>
+      </div>
+      <div class="list">
+        ${picked.length ? picked.map((p, i) => {
+          const m = mat(p.mid);
+          return `<div class="line"><div>
+            <b>${esc(m.brand)} ${esc(m.model)}</b>
+            <small>${esc(m.sn)} · 可用 ${qty(avail(m.id))}</small></div>
+            <div class="num">× ${p.n} <button class="rm" onclick="S.scanCart.splice(${i},1);render()">✕</button></div>
+          </div>`;
+        }).join('') : `<div class="line" style="color:var(--faint);border:none">还没扫到商品</div>`}
+      </div>
+      <div class="btns">
+        <button class="btn primary" ${picked.length?'':'disabled'} onclick="fromScan()">生成出库单</button>
+        <button class="btn" ${picked.length?'':'disabled'} onclick="S.scanCart=[];render()">清空</button>
+      </div>
+    </div>
+    <div class="aside-note">
+      <h4>这个功能老系统没有</h4>
+      老系统只能在电脑上依次选「物料编号」和「型号」两个下拉框，929 个物料翻起来很慢，而你们仓库现场拿货是看着实物扫条码的。
+      <br><br>
+      <h4>新系统怎么做</h4>
+      每条物料档案加一个 <code>条码</code> 字段（你们现在的数据里没有，需要补录或贴标）。手机浏览器打开就是扫码页，不装 App；扫码后立刻显示可用库存，防止超卖。累积完点「生成出库单」，跳到刚才那张出库单，补客户和价格再提交。
+      <br><br>
+      <h4>需要你确认</h4>
+      你们的商品现在有没有厂家条码？如果没有，是打算自己打印条码贴，还是用「编号 + 型号」当码扫？
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   交互
+   ========================================================= */
+function setLine(i, key, val) {
+  const l = S.draft.lines[i];
+  if (key === 'n') {
+    l.n = Math.max(0, Number(val) || 0);
+  } else {
+    l.taxUnit = Math.max(0, Number(val) || 0);
+  }
+  render();
+}
+function delLine(i) { S.draft.lines.splice(i, 1); render(); }
+function addLine(mid) {
+  const ex = S.draft.lines.find(l => l.mid === mid);
+  if (ex) { ex.n = Number(ex.n) + 1; }
+  else {
+    const m = mat(mid);
+    S.draft.lines.push({mid, n: 1, taxUnit: m.price});
+  }
+  closeOverlay(); render();
+}
+
+function openPicker(fromScan) {
+  const list = MATERIALS;
+  document.getElementById('overlay').innerHTML = `<div class="mask" onclick="if(event.target===this)closeOverlay()">
+    <div class="modal">
+      <header><b>${fromScan ? '选商品' : '添加商品'}</b>
+        <input class="inp" id="pk-kw" placeholder="编号 / 名称 / 型号 / 品牌 / 条码" style="width:260px;margin-left:auto"
+          oninput="filterPicker()">
+        <button class="x" onclick="closeOverlay()">✕</button></header>
+      <div class="body">
+        <table><thead><tr><th>编号</th><th>品牌</th><th>名称</th><th>型号</th><th>单位</th>
+          <th class="r">可用</th><th class="r">含税售价</th></tr></thead>
+          <tbody id="pk-body">${pickerRows(list, fromScan)}</tbody></table>
+      </div>
+      <footer><span class="hint" style="margin-right:auto">点一行即可加入</span>
+        <button class="btn" onclick="closeOverlay()">关闭</button></footer>
+    </div>
+  </div>`;
+  window._pkScan = !!fromScan;
+  setTimeout(() => document.getElementById('pk-kw').focus(), 30);
+}
+function pickerRows(list, fromScan) {
+  return list.map(m => {
+    const av = avail(m.id);
+    return `<tr class="pick-row" onclick="addPicked('${m.id}',${!!fromScan})">
+      <td class="mono">${esc(m.sn)}</td><td>${esc(m.brand)}</td><td>${esc(m.name)}</td>
+      <td class="mono">${esc(m.model)}</td><td>${esc(m.unit)}</td>
+      <td class="r num" style="color:${av<=0?'var(--rust)':'inherit'}">${qty(av)}</td>
+      <td class="r num">${money(m.price)}</td></tr>`;
+  }).join('');
+}
+function filterPicker() {
+  const kw = document.getElementById('pk-kw').value.trim().toLowerCase();
+  const list = MATERIALS.filter(m => !kw || [m.sn, m.name, m.model, m.brand, m.barcode].join(' ').toLowerCase().includes(kw));
+  document.getElementById('pk-body').innerHTML = pickerRows(list, window._pkScan)
+    || `<tr><td colspan="7" class="empty">没找到，换个关键词试试</td></tr>`;
+}
+function addPicked(mid, fromScan) {
+  if (fromScan) {
+    if (!S.scanCart) S.scanCart = [];
+    const ex = S.scanCart.find(l => l.mid === mid);
+    if (ex) ex.n += 1; else S.scanCart.push({mid, n: 1});
+    closeOverlay(); render();
+  } else {
+    const ex = S.draft.lines.find(l => l.mid === mid);
+    if (ex) ex.n += 1;
+    else S.draft.lines.push({mid, n: 1, taxUnit: mat(mid).price});
+    closeOverlay(); render();
+  }
+}
+function closeOverlay() { document.getElementById('overlay').innerHTML = ''; }
+
+function submitDraft() {
+  const d = S.draft;
+  if (!d.clientId) return toast('还没选客户');
+  if (!d.lines.length) return toast('至少加一行商品');
+  if (d.lines.some(l => !l.n || l.n <= 0)) return toast('有一行数量是 0，先改掉');
+
+  /* 可用量校验 */
+  for (const l of d.lines) {
+    const m = mat(l.mid);
+    const others = docs.filter(x => x.status === 'wait').reduce((s, x) =>
+      s + x.lines.filter(y => y.mid === l.mid).reduce((a, b) => a + Number(b.n), 0), 0);
+    if (l.n + others > m.stock) {
+      return toast(`${m.brand} ${m.model} 可用只有 ${qty(m.stock - others)}，超了`);
+    }
+  }
+
+  DOC_SEQ += 1;
+  const sn = 'hnwlo00005' + d.date.replace(/-/g, '') + String(DOC_SEQ);
+  docs.push({
+    id: 'd' + Date.now(), sn, date: d.date, clientId: d.clientId, sales: d.sales,
+    stock: '郑州公司仓', contract: d.contract, invoiceStatus: d.invoiceStatus,
+    status: 'wait', note: d.note, receiving: d.receiving, logistics: d.logistics,
+    createBy: S.user.name, lines: d.lines.map(l => ({mid: l.mid, n: Number(l.n), taxUnit: Number(l.taxUnit)}))
+  });
+  S.draft = null;
+  toast('已提交，等待审核');
+  setTimeout(() => go('out-list'), 400);
+}
+
+function auditDoc(id, result) {
+  const d = docs.find(x => x.id === id);
+  if (result === 'no') {
+    d.status = 'no'; d.auditBy = S.user.name; d.auditReason = '原型演示驳回';
+    toast('已驳回');
+    render(); return;
+  }
+  /* 扣库存 + 写流水 */
+  for (const l of d.lines) {
+    const m = mat(l.mid);
+    m.stock -= Number(l.n);
+    ledgers.push({date: d.date, sn: d.sn, mid: l.mid, n: -Number(l.n), after: m.stock});
+  }
+  d.status = 'ok'; d.auditBy = S.user.name;
+  toast('审核通过，库存已扣减');
+  render();
+}
+
+/* 扫码模拟：随机挑一个有货的 */
+function simScan() {
+  const pool = MATERIALS.filter(m => avail(m.id) > 0);
+  const m = pool[Math.floor(Math.random() * pool.length)];
+  if (!S.scanCart) S.scanCart = [];
+  const ex = S.scanCart.find(l => l.mid === m.id);
+  if (ex) ex.n += 1; else S.scanCart.push({mid: m.id, n: 1});
+  toast(`扫到 ${m.brand} ${m.model}`);
+  render();
+}
+function fromScan() {
+  const cart = S.scanCart || [];
+  S.draft = newDraft();
+  S.draft.lines = cart.map(l => ({mid: l.mid, n: l.n, taxUnit: mat(l.mid).price}));
+  S.scanCart = [];
+  go('out-new');
+}
+
+/* 启动 */
+render();
+</script>
+</body>
+</html>
