@@ -75,6 +75,11 @@ h1.page{font-size:17px;font-weight:600;margin:0 0 2px;letter-spacing:.2px;white-
 .inp:focus{border-color:var(--brand);outline:none;box-shadow:0 0 0 3px var(--brand-soft)}
 .inp[readonly]{background:var(--paper);color:var(--muted)}
 
+/* 价格确认标记 */
+.price-confirm{background:#FEF3C7;border-color:#F59E0B;animation:pulse-price 1.2s ease-in-out infinite}
+.price-confirm:focus{background:#FFFBEB;border-color:#F59E0B}
+@keyframes pulse-price{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.3)}50%{box-shadow:0 0 0 4px rgba(245,158,11,.15)}}
+
 /* ---------- tables ---------- */
 table{width:100%;border-collapse:collapse}
 th{font-size:11.5px;font-weight:600;color:var(--muted);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);background:#FBFCFB;white-space:nowrap;position:sticky;top:0}
@@ -103,6 +108,9 @@ td.r,th.r{text-align:right}
 .lines input:hover{border-color:var(--line)}
 .lines input:focus{border-color:var(--brand);background:#fff;outline:none;box-shadow:0 0 0 2px var(--brand-soft)}
 .lines input.text{text-align:left}
+.lines input.price-confirm{background:#FFF7E0;border-color:#E8C76D}
+.lines input.price-confirm:hover{border-color:#D4A835}
+.lines input.price-confirm:focus{background:#fff;border-color:var(--brand)}
 .pick{display:block;width:100%;text-align:left;padding:5px 7px;border:1px dashed var(--line);border-radius:4px;color:var(--muted);font-size:12.5px;background:#fff}
 .pick:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
 .picked{font-size:12px;line-height:1.35;white-space:normal}
@@ -234,7 +242,14 @@ const MATERIALS = [
   {id:'m11', sn:'4000121',  brand:'沃尔', name:'沃尔10kV三芯户内终端25-50', model:'沃尔25-50',    unit:'套', barcode:'6971488001210', stock:53, cost:245.13, min:20, max:200, price:342.00},
   {id:'m12', sn:'5000031',  brand:'中垒', name:'热缩管母排盒',            model:'ZLM-10/3',          unit:'付', barcode:'6950334000311', stock:340, cost:36.50,  min:50, max:600, price:56.00},
   {id:'m13', sn:'6000118',  brand:'ABB',  name:'冷缩中间接头',            model:'CSTI-15/3',         unit:'套', barcode:'6907822001185', stock:27, cost:742.60, min:10, max:120, price:1020.00},
-  {id:'m14', sn:'7000205',  brand:'长园', name:'绝缘热缩带',              model:'CY-50mm',           unit:'卷', barcode:'6923445002052', stock:410, cost:18.90,  min:50, max:800, price:29.00}
+  {id:'m14', sn:'7000205',  brand:'长园', name:'绝缘热缩带',              model:'CY-50mm',           unit:'卷', barcode:'6923445002052', stock:410, cost:18.90,  min:50, max:800, price:29.00},
+  /* 胶带分切物料 */
+  {id:'m15', sn:'8000301',  brand:'3M',   name:'胶带母卷',                model:'3M-1200mm',         unit:'支', barcode:'6901234560301', stock:5,   cost:480.00, min:1,  max:20,  price:600.00,
+   cuttable:true, masterWidth:1200, currentWidth:1200, minWaste:10, cutFee:0.5, spec:'master'},
+  {id:'m16', sn:'8000302',  brand:'3M',   name:'胶带子卷',                model:'3M-500mm',          unit:'卷', barcode:'', stock:24, cost:202.40, min:10, max:100, price:250.00,
+   cuttable:false, spec:'500mm', parentId:'m15'},
+  {id:'m17', sn:'8000303',  brand:'3M',   name:'胶带子卷',                model:'3M-40mm',           unit:'卷', barcode:'', stock:18, cost:16.50,  min:20, max:200, price:22.00,
+   cuttable:false, spec:'40mm', parentId:'m15'}
 ];
 
 const CLIENTS = [
@@ -277,7 +292,15 @@ const docs = [
    auditReason:'客户要求改型号，驳回重开', lines:[{mid:'m13', n:2, taxUnit:1020}]},
   {id:'d6', sn:'hnwlo000052026101802702', date:'2026-10-18', clientId:'c07', sales:'杨莉', stock:'郑州公司仓',
    contract:'HNWLS01320261018008', invoiceStatus:1, status:'ok', note:'随车发货', createBy:'杨莉', auditBy:'刘国庆',
-   lines:[{mid:'m04', n:3, taxUnit:940}, {mid:'m14', n:40, taxUnit:29}]}
+   lines:[{mid:'m04', n:3, taxUnit:940}, {mid:'m14', n:40, taxUnit:29}]},
+  {id:'d7', sn:'hnwlo000052026101702701', date:'2026-10-17', clientId:'c02', sales:'朱俊青', stock:'郑州公司仓',
+   contract:'', invoiceStatus:0, status:'ok', note:'混合开单：整支母卷+分切子卷', createBy:'朱俊青', auditBy:'刘国庆',
+   receiver:'万楼库房', receiverPhone:'13800138000', receiverAddr:'河南郑州金水区',  carrier:'顺丰快递',
+   lines:[
+     {mid:'m15', n:2, cutWidth:0, taxUnit:600},        // 2支整支母卷
+     {mid:'m15', n:30, cutWidth:40, taxUnit:22},       // 从母卷切30卷×40mm
+     {mid:'m16', n:5, cutWidth:0, taxUnit:250}         // 5卷已切好的500mm子卷
+   ]}
 ];
 
 /* 已审核单据的库存已扣，这里同步扣掉，避免演示数字对不上 */
@@ -325,7 +348,18 @@ function lockedQty(mid) {
 const canSeeCost = () => S.user && S.user.scope === 'all';
 const mat = id => MATERIALS.find(m => m.id === id);
 const cli = id => CLIENTS.find(c => c.id === id);
+/* 获取客户对某物料的上次成交价 */
+function lastPrice(mid, clientId) {
+  if (!clientId) return null;
+  const approved = docs.filter(d => d.status === 'ok' && d.clientId === clientId).sort((a, b) => b.date.localeCompare(a.date));
+  for (const d of approved) {
+    const line = d.lines.find(l => l.mid === mid);
+    if (line && line.taxUnit) return line.taxUnit;
+  }
+  return null;
+}
 const avail = mid => { const m = mat(mid); return m ? m.stock - lockedQty(mid) : 0; };
+
 
 /* 数据级权限：销售只看自己的 */
 function visibleDocs() {
@@ -534,21 +568,39 @@ function viewOutNew() {
     const m = mat(l.mid);
     const c = lineCalc(l);
     const av = avail(l.mid);
+    const isCuttable = m.cuttable && m.spec === 'master';
+    const cutW = Number(l.cutWidth) || 0;
+    const consumedW = isCuttable && cutW > 0 ? cutW * (Number(l.n) || 0) : 0;
+    const remain = isCuttable ? (m.currentWidth || m.masterWidth) - consumedW : 0;
+
+    // 成本计算：如果是分切，按宽度比例 + 分切费
+    let unitCostCalc = m.cost;
+    if (isCuttable && cutW > 0) {
+      const matCost = m.cost * (cutW / m.masterWidth);
+      unitCostCalc = matCost + (m.cutFee || 0);
+    }
+    const totalCost = unitCostCalc * (Number(l.n) || 0);
+
     return `<tr>
       <td style="width:26px;color:var(--faint)" class="num">${i+1}</td>
       <td style="min-width:210px">
         <div class="picked">
           <b>${esc(m.brand)} ${esc(m.name)}</b>
           <span class="mono">${esc(m.sn)}</span> · ${esc(m.model)} · ${esc(m.unit)}
+          ${isCuttable ? `<span class="tag info" style="margin-left:6px">可分切</span>` : ''}
           <div class="stockinfo">可用库存 <b class="${av<=0?'low':''}">${qty(av)}</b> ${esc(m.unit)}
-            ${canSeeCost() ? '· 不含税成本 ' + money(m.cost) : ''}</div>
+            ${isCuttable ? ` · 当前可用宽度 <b>${m.currentWidth||m.masterWidth}mm</b>` : ''}
+            ${canSeeCost() ? ' · 不含税成本 ' + money(unitCostCalc) + (isCuttable&&cutW>0 ? '（含分切费'+money(m.cutFee||0)+'）' : '') : ''}</div>
         </div>
       </td>
-      <td class="cell r" style="width:96px"><input class="num" type="number" min="0" step="1" value="${l.n}" oninput="setLine(${i},'n',this.value)"></td>
-      <td class="cell r" style="width:104px"><input class="num" type="number" min="0" step="0.01" value="${l.taxUnit}" oninput="setLine(${i},'taxUnit',this.value)"></td>
+      ${isCuttable ? `<td class="cell r" style="width:86px"><input class="num" type="number" min="0" step="1" placeholder="宽mm" value="${cutW||''}" oninput="setLine(${i},'cutWidth',this.value)" title="切取宽度(mm)"></td>` : '<td style="width:86px"></td>'}
+      <td class="cell r" style="width:82px"><input class="num" type="number" min="0" step="0.001" value="${l.n}" oninput="setLine(${i},'n',this.value)"></td>
+      ${isCuttable && consumedW > 0 ? `<td class="r num" style="width:90px;font-size:11.5px;color:var(--muted)">耗${consumedW}mm<br>剩${remain}mm</td>` : '<td style="width:90px"></td>'}
+      <td class="cell r" style="width:104px"><input class="num price-input ${l.priceFrom==='last'?'price-confirm':''}" type="number" min="0" step="0.01" value="${l.taxUnit}" oninput="setLine(${i},'taxUnit',this.value);this.classList.remove('price-confirm')" onclick="this.classList.remove('price-confirm')" data-confirmed="${l.priceFrom==='last'?'false':'true'}"></td>
       <td class="r num" style="width:110px;color:var(--muted)">${money(c.noUnit)}</td>
       <td class="r num" style="width:112px"><b>${money(c.taxSum)}</b></td>
       <td class="r num" style="width:112px;color:var(--muted)">${money(c.noSum)}</td>
+      ${canSeeCost() ? `<td class="r num" style="width:96px;color:var(--rust);font-size:11.5px">${money(totalCost)}</td>` : ''}
       <td style="width:34px"><button class="rm" title="删除这一行" onclick="delLine(${i})">✕</button></td>
     </tr>`;
   }).join('');
@@ -593,11 +645,14 @@ function viewOutNew() {
       <table class="lines">
         <thead><tr>
           <th style="width:26px"></th><th>商品（编号 / 型号 / 单位）</th>
-          <th class="r" style="width:96px">数量</th>
+          <th class="r" style="width:86px">宽mm</th>
+          <th class="r" style="width:82px">数量</th>
+          <th class="r" style="width:90px">耗宽/剩余</th>
           <th class="r" style="width:104px">含税单价</th>
           <th class="r" style="width:110px">不含税单价</th>
           <th class="r" style="width:112px">含税总价</th>
           <th class="r" style="width:112px">不含税总价</th>
+          ${canSeeCost() ? '<th class="r" style="width:96px">成本</th>' : ''}
           <th style="width:34px"></th>
         </tr></thead>
         <tbody>
@@ -808,6 +863,8 @@ function setLine(i, key, val) {
   const l = S.draft.lines[i];
   if (key === 'n') {
     l.n = Math.max(0, Number(val) || 0);
+  } else if (key === 'cutWidth') {
+    l.cutWidth = Math.max(0, Number(val) || 0);
   } else {
     l.taxUnit = Math.max(0, Number(val) || 0);
   }
@@ -819,7 +876,18 @@ function addLine(mid) {
   if (ex) { ex.n = Number(ex.n) + 1; }
   else {
     const m = mat(mid);
-    S.draft.lines.push({mid, n: 1, taxUnit: m.price});
+    // 查找该客户该物料最近一次成交价
+    let lastPrice = m.price;
+    let priceFrom = 'default';
+    if (S.draft.clientId) {
+      const hist = docs.filter(d => d.clientId === S.draft.clientId && d.status === 'ok')
+        .flatMap(d => d.lines).filter(l => l.mid === mid).sort((a,b) => b.taxUnit - a.taxUnit);
+      if (hist.length > 0) {
+        lastPrice = hist[0].taxUnit;
+        priceFrom = 'last';
+      }
+    }
+    S.draft.lines.push({mid, n: 1, cutWidth: 0, taxUnit: lastPrice, priceFrom});
   }
   closeOverlay(); render();
 }
@@ -833,7 +901,7 @@ function openPicker(fromScan) {
           oninput="filterPicker()">
         <button class="x" onclick="closeOverlay()">✕</button></header>
       <div class="body">
-        <table><thead><tr><th>编号</th><th>品牌</th><th>名称</th><th>型号</th><th>单位</th>
+        <table><thead><tr><th>编号</th><th>品牌</th><th>名称</th><th>型号</th><th>规格</th>
           <th class="r">可用</th><th class="r">含税售价</th></tr></thead>
           <tbody id="pk-body">${pickerRows(list, fromScan)}</tbody></table>
       </div>
@@ -847,9 +915,17 @@ function openPicker(fromScan) {
 function pickerRows(list, fromScan) {
   return list.map(m => {
     const av = avail(m.id);
+    let specHtml = `<td>${esc(m.unit)}</td>`;
+    if (m.cuttable && m.spec === 'master') {
+      const cw = m.currentWidth || m.masterWidth;
+      specHtml = `<td><span class="tag" style="background:var(--cyan-soft);color:var(--cyan)">可分切</span>
+        <small style="color:var(--muted)">${cw}mm可用</small></td>`;
+    } else if (m.spec && m.spec !== 'master') {
+      specHtml = `<td>${esc(m.spec)} <small style="color:var(--muted)">(子卷)</small></td>`;
+    }
     return `<tr class="pick-row" onclick="addPicked('${m.id}',${!!fromScan})">
       <td class="mono">${esc(m.sn)}</td><td>${esc(m.brand)}</td><td>${esc(m.name)}</td>
-      <td class="mono">${esc(m.model)}</td><td>${esc(m.unit)}</td>
+      <td class="mono">${esc(m.model)}</td>${specHtml}
       <td class="r num" style="color:${av<=0?'var(--rust)':'inherit'}">${qty(av)}</td>
       <td class="r num">${money(m.price)}</td></tr>`;
   }).join('');
@@ -869,7 +945,13 @@ function addPicked(mid, fromScan) {
   } else {
     const ex = S.draft.lines.find(l => l.mid === mid);
     if (ex) ex.n += 1;
-    else S.draft.lines.push({mid, n: 1, taxUnit: mat(mid).price});
+    else {
+      const m = mat(mid);
+      const lp = lastPrice(mid, S.draft.clientId);
+      const price = lp !== null ? lp : m.price;
+      const priceFrom = lp !== null ? 'last' : 'default';
+      S.draft.lines.push({mid, n: 1, taxUnit: price, priceFrom});
+    }
     closeOverlay(); render();
   }
 }
@@ -880,6 +962,27 @@ function submitDraft() {
   if (!d.clientId) return toast('还没选客户');
   if (!d.lines.length) return toast('至少加一行商品');
   if (d.lines.some(l => !l.n || l.n <= 0)) return toast('有一行数量是 0，先改掉');
+
+  /* 价格确认检查 */
+  const unconfirmed = d.lines.filter(l => l.priceFrom === 'last' && document.querySelector(`input.price-confirm[data-confirmed="false"]`));
+  if (unconfirmed.length > 0) {
+    return toast('有默认价格未确认（黄底的），请点击或修改后再提交');
+  }
+
+  /* 分切宽度校验 */
+  for (const l of d.lines) {
+    const m = mat(l.mid);
+    if (m.cuttable && m.spec === 'master') {
+      const w = Number(l.cutWidth) || 0;
+      const n = Number(l.n) || 0;
+      if (w <= 0) return toast(`${m.brand} ${m.model} 是可分切母卷，必须填写切取宽度`);
+      const consumed = w * n;
+      const avail = m.currentWidth || m.masterWidth;
+      if (consumed > avail - m.minWaste) {
+        return toast(`${m.brand} ${m.model} 可用宽度只有 ${avail}mm，切${w}mm×${n}卷 = ${consumed}mm 会超或到料头`);
+      }
+    }
+  }
 
   /* 可用量校验 */
   for (const l of d.lines) {
