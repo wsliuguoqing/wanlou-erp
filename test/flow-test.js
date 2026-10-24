@@ -3,7 +3,7 @@
  * 端到端测试：模拟真实业务全流程
  * 用法：node test/flow-test.js
  */
-const BASE = 'http://127.0.0.1:3000';
+const BASE = 'http://127.0.0.1:3999';
 let token = '';
 
 async function api(path, method = 'GET', body) {

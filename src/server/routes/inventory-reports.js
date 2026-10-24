@@ -342,6 +342,84 @@ route('GET', '/api/logs', async (ctx) => {
   return { list: db.prepare(sql).all(...args) };
 });
 
+/* ==================== 经营趋势（按月销售额与毛利） ==================== */
+route('GET', '/api/reports/trend', async (ctx) => {
+  ctx.need('report.profit');
+  const thisYear = Number(ctx.query.year) || Number(today().slice(0, 4));
+  const cmpYear = Number(ctx.query.compare_year) || (thisYear - 1);
+
+  /** 取某年 12 个月的销售额与成本 */
+  function yearMonths(y) {
+    const rows = db.prepare(`
+      SELECT substr(doc_date,1,7) ym,
+             COALESCE(SUM(total_amount),0) amount,
+             COALESCE(SUM(total_cost),0) cost,
+             COUNT(*) cnt
+      FROM docs
+      WHERE type='OUT' AND status='approved' AND substr(doc_date,1,4)=?
+      GROUP BY ym`).all(String(y));
+    const map = new Map(rows.map(r => [r.ym, r]));
+    return Array.from({ length: 12 }, (_, i) => {
+      const ym = `${y}-${String(i + 1).padStart(2, '0')}`;
+      const r = map.get(ym) || { amount: 0, cost: 0, cnt: 0 };
+      const amount = round2(r.amount);
+      const cost = round2(r.cost);
+      return {
+        month: i + 1, ym, amount, cost,
+        profit: round2(amount - cost),
+        margin: amount > 0 ? round4((amount - cost) / amount) : 0,
+        count: r.cnt
+      };
+    });
+  }
+
+  const cur = yearMonths(thisYear);
+  const prev = yearMonths(cmpYear);
+
+  const sumOf = arr => arr.reduce((a, m) => ({
+    amount: round2(a.amount + m.amount),
+    cost: round2(a.cost + m.cost),
+    profit: round2(a.profit + m.profit),
+    count: a.count + m.count
+  }), { amount: 0, cost: 0, profit: 0, count: 0 });
+
+  const curTotal = sumOf(cur);
+  const prevTotal = sumOf(prev);
+
+  const nowMonth = Number(today().slice(5, 7));
+  const isCurrentYear = thisYear === Number(today().slice(0, 4));
+  const thisMonth = cur[nowMonth - 1] || { amount: 0, profit: 0 };
+  const sameMonthLastYear = prev[nowMonth - 1] || { amount: 0, profit: 0 };
+
+  // 年初至今对比（只比到当前月，避免拿整年比半年）
+  const ytdCur = sumOf(isCurrentYear ? cur.slice(0, nowMonth) : cur);
+  const ytdPrev = sumOf(isCurrentYear ? prev.slice(0, nowMonth) : prev);
+
+  const growth = (a, b) => b > 0 ? round4((a - b) / b) : (a > 0 ? 1 : 0);
+
+  return {
+    year: thisYear, compareYear: cmpYear, currentMonth: nowMonth,
+    months: cur, compareMonths: prev,
+    total: curTotal, compareTotal: prevTotal,
+    thisMonth: {
+      ym: thisMonth.ym, amount: thisMonth.amount, profit: thisMonth.profit,
+      lastYearAmount: sameMonthLastYear.amount,
+      lastYearProfit: sameMonthLastYear.profit,
+      amountGrowth: growth(thisMonth.amount, sameMonthLastYear.amount),
+      profitGrowth: growth(thisMonth.profit, sameMonthLastYear.profit)
+    },
+    ytd: {
+      amount: ytdCur.amount, profit: ytdCur.profit,
+      lastYearAmount: ytdPrev.amount, lastYearProfit: ytdPrev.profit,
+      amountGrowth: growth(ytdCur.amount, ytdPrev.amount),
+      profitGrowth: growth(ytdCur.profit, ytdPrev.profit)
+    },
+    availableYears: db.prepare(`SELECT DISTINCT substr(doc_date,1,4) y FROM docs
+                                WHERE type='OUT' AND status='approved' ORDER BY y DESC`)
+      .all().map(r => Number(r.y))
+  };
+});
+
 /* ==================== 系统设置 ==================== */
 route('GET', '/api/settings', async (ctx) => {
   const rows = db.prepare('SELECT * FROM settings').all();

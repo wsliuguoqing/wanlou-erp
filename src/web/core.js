@@ -58,7 +58,7 @@ function toast(msg, type = '') {
 function openDialog({ title, body, footer, size = '', onMount }) {
   const root = document.getElementById('modal-root');
   root.innerHTML = `
-    <div class="mask" onclick="if(event.target===this)closeDialog()">
+    <div class="mask">
       <div class="dialog ${size}">
         <div class="dlg-head">
           <h3>${esc(title)}</h3>
@@ -73,6 +73,30 @@ function openDialog({ title, body, footer, size = '', onMount }) {
   if (first) setTimeout(() => first.focus(), 40);
 }
 function closeDialog() { document.getElementById('modal-root').innerHTML = ''; }
+
+/* ---------------- 输入格式限制 ---------------- */
+/** 只允许数字、横线（固话/手机都适用） */
+function onlyPhone(el) {
+  el.value = el.value.replace(/[^\d-]/g, '').slice(0, 20);
+}
+/** 只允许 11 位纯数字（手机号） */
+function onlyMobile(el) {
+  el.value = el.value.replace(/\D/g, '').slice(0, 11);
+}
+/** 非负数字，可限定小数位 */
+function onlyPositive(el, decimals = 3) {
+  let v = el.value.replace(/[^\d.]/g, '');
+  const parts = v.split('.');
+  if (parts.length > 2) v = parts[0] + '.' + parts.slice(1).join('');
+  if (decimals === 0) v = v.split('.')[0];
+  else if (parts[1] !== undefined) v = parts[0] + '.' + parts[1].slice(0, decimals);
+  el.value = v;
+}
+/** 失焦时把空值或负值归零 */
+function normalizeNum(el, min = 0) {
+  const n = Number(el.value);
+  if (!el.value || isNaN(n) || n < min) el.value = min === 0 ? '' : String(min);
+}
 
 function confirmDialog(msg, onYes, yesText = '确定') {
   openDialog({
@@ -133,7 +157,7 @@ const MENU = [
   { group: '报表', items: [
     { key: 'carryover', label: '待结转库存', perm: 'report.carryover' },
     { key: 'summary', label: '进销存汇总', perm: 'report.summary' },
-    { key: 'profit', label: '利润分析', perm: 'report.profit' },
+    { key: 'profit', label: '经营分析', perm: 'report.profit' },
     { key: 'receivable', label: '应收账款', perm: 'ar.view' },
     { key: 'payable', label: '应付账款', perm: 'ap.view' }
   ]},

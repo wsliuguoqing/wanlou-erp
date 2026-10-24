@@ -17,7 +17,11 @@ page('dashboard', () => {
     </div>
 
     <div class="stats">
-      <div class="stat"><div class="stat-label">待审核单据</div><div class="stat-val" id="kpi-pending">—</div><div class="stat-sub">需要你处理</div></div>
+      <div class="stat clickable" onclick="viewPendingDocs()" style="cursor:pointer" title="点击查看待审核单据列表">
+        <div class="stat-label">待审核单据</div>
+        <div class="stat-val" id="kpi-pending">—</div>
+        <div class="stat-sub">需要你处理</div>
+      </div>
       <div class="stat"><div class="stat-label">本月出库金额</div><div class="stat-val green" id="kpi-out">—</div><div class="stat-sub">已审核</div></div>
       ${can('ar.view') ? `<div class="stat"><div class="stat-label">应收账款余额</div><div class="stat-val" id="kpi-ar">—</div><div class="stat-sub">客户未结清</div></div>` : ''}
       ${can('ap.view') ? `<div class="stat"><div class="stat-label">应付账款余额</div><div class="stat-val" id="kpi-ap">—</div><div class="stat-sub">欠供应商</div></div>` : ''}
@@ -85,14 +89,25 @@ page('carryover', () => {
   return `
     <h1 class="pg">待结转库存清单</h1>
     <p class="pg-sub">已出库未结转的订单及其毛利，是看经营成果最常用的表</p>
-    <div class="bar">
-      <input class="inp" type="date" style="width:150px" id="co-from" value="${monthStart()}">
+    <div class="bar" style="flex-wrap:wrap">
+      <input class="inp" type="date" style="width:148px" id="co-from" value="${esc(RepState.coFilter?.from || monthStart())}">
       <span class="hint">至</span>
-      <input class="inp" type="date" style="width:150px" id="co-to" value="${todayStr()}">
-      <select class="inp" style="width:130px" id="co-inv">
-        <option value="">全部</option><option value="0">未开票</option><option value="1">已开票</option>
+      <input class="inp" type="date" style="width:148px" id="co-to" value="${esc(RepState.coFilter?.to || todayStr())}">
+      <select class="inp" style="width:190px" id="co-cust" title="按客户筛选">
+        <option value="">全部客户</option>
+        ${(RepState.coCustomers || []).map(c => `<option value="${c.id}" ${String(RepState.coFilter?.customer_id) === String(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
       </select>
-      <button class="btn" onclick="loadCarryover()">查询</button>
+      <select class="inp" style="width:140px" id="co-sales" title="按销售员筛选">
+        <option value="">全部销售员</option>
+        ${(RepState.coSales || []).map(u => `<option value="${u.id}" ${String(RepState.coFilter?.salesperson_id) === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+      </select>
+      <select class="inp" style="width:120px" id="co-inv">
+        <option value="" ${!RepState.coFilter?.invoice_status ? 'selected' : ''}>开票：全部</option>
+        <option value="0" ${RepState.coFilter?.invoice_status === '0' ? 'selected' : ''}>未开票</option>
+        <option value="1" ${RepState.coFilter?.invoice_status === '1' ? 'selected' : ''}>已开票</option>
+      </select>
+      <button class="btn primary" onclick="loadCarryover()">查询</button>
+      <button class="btn" onclick="resetCarryover()">清空</button>
       <div class="spacer"></div>
       <button class="btn" onclick="exportTable('carryover-table','待结转库存清单')">导出 Excel</button>
     </div>
@@ -112,13 +127,42 @@ page('carryover', () => {
 page('carryover').afterRender = () => loadCarryover();
 
 async function loadCarryover() {
-  const from = document.getElementById('co-from')?.value || '';
-  const to = document.getElementById('co-to')?.value || '';
-  const inv = document.getElementById('co-inv')?.value ?? '';
+  // 首次进入时把客户和销售员选项load出来
+  if (!RepState.coCustomers) {
+    try {
+      const cs = await api('/customers');
+      RepState.coCustomers = (cs.list || []).map(c => ({ id: c.id, name: c.name }));
+    } catch { RepState.coCustomers = []; }
+  }
+  if (!RepState.coSales) {
+    try {
+      const us = await api('/users');
+      RepState.coSales = (us.list || [])
+        .filter(u => ['sales', 'manager', 'admin'].includes(u.role))
+        .map(u => ({ id: u.id, name: u.name }));
+    } catch { RepState.coSales = []; }
+  }
+
+  const f = {
+    from: document.getElementById('co-from')?.value || '',
+    to: document.getElementById('co-to')?.value || '',
+    customer_id: document.getElementById('co-cust')?.value || '',
+    salesperson_id: document.getElementById('co-sales')?.value || '',
+    invoice_status: document.getElementById('co-inv')?.value ?? ''
+  };
+  RepState.coFilter = f;
+
+  const qs = new URLSearchParams(f);
   try {
-    RepState.carryover = await api(`/reports/carryover?from=${from}&to=${to}&invoice_status=${inv}`);
+    RepState.carryover = await api(`/reports/carryover?${qs}`);
     if (App.route === 'carryover') document.getElementById('page').innerHTML = PAGES.carryover();
   } catch (e) { toast(e.message, 'err'); }
+}
+
+function resetCarryover() {
+  RepState.coFilter = { from: monthStart(), to: todayStr(), customer_id: '', salesperson_id: '', invoice_status: '' };
+  if (App.route === 'carryover') document.getElementById('page').innerHTML = PAGES.carryover();
+  loadCarryover();
 }
 
 /* ==================== 进销存汇总 ==================== */
@@ -165,47 +209,9 @@ async function loadSummary() {
 }
 
 /* ==================== 利润分析 ==================== */
-page('profit', () => {
-  const d = RepState.profit || { list: [], by: 'customer' };
-  const rows = d.list.map(r => `<tr>
-    <td>${esc(r.name)}</td>
-    <td class="r num">${money(r.amount)}</td>
-    <td class="r num">${money(r.cost)}</td>
-    <td class="r num" style="color:var(--brand)"><b>${money(r.profit)}</b></td>
-    <td class="r num">${r.margin}</td>
-    <td class="r num">${r.order_count}</td>
-  </tr>`);
-  const byLabel = { customer: '客户', material: '物料', salesperson: '销售员' };
-  return `
-    <h1 class="pg">利润分析</h1>
-    <p class="pg-sub">按${byLabel[d.by]}统计销售额、成本与毛利</p>
-    <div class="bar">
-      <select class="inp" style="width:140px" id="pf-by" onchange="loadProfit()">
-        <option value="customer" ${d.by === 'customer' ? 'selected' : ''}>按客户</option>
-        <option value="material" ${d.by === 'material' ? 'selected' : ''}>按物料</option>
-        <option value="salesperson" ${d.by === 'salesperson' ? 'selected' : ''}>按销售员</option>
-      </select>
-      <input class="inp" type="date" style="width:150px" id="pf-from" value="${monthStart()}">
-      <span class="hint">至</span>
-      <input class="inp" type="date" style="width:150px" id="pf-to" value="${todayStr()}">
-      <button class="btn" onclick="loadProfit()">查询</button>
-      <div class="spacer"></div>
-      <button class="btn" onclick="exportTable('profit-table','利润分析')">导出 Excel</button>
-    </div>
-    <div id="profit-table">
-    ${tableWrap([{ label: byLabel[d.by] }, { label: '销售额', r: 1 }, { label: '成本', r: 1 },
-      { label: '毛利', r: 1 }, { label: '毛利率', r: 1 }, { label: '单数', r: 1 }], rows, '所选期间没有数据')}
-    </div>`;
-});
-page('profit').afterRender = () => loadProfit();
+/* 利润分析已改为「经营分析」图表看板，见 pages-trend.js */
 
-async function loadProfit() {
-  const by = document.getElementById('pf-by')?.value || 'customer';
-  try {
-    RepState.profit = await api(`/reports/profit?by=${by}&from=${document.getElementById('pf-from').value}&to=${document.getElementById('pf-to').value}`);
-    if (App.route === 'profit') document.getElementById('page').innerHTML = PAGES.profit();
-  } catch (e) { toast(e.message, 'err'); }
-}
+
 
 /* ==================== 应收 / 应付 ==================== */
 page('receivable', () => {
@@ -294,4 +300,24 @@ function exportTable(containerId, filename) {
   a.click();
   URL.revokeObjectURL(a.href);
   toast('已导出，可用 Excel 打开', 'ok');
+}
+
+/* ==================== 首页快捷跳转 ==================== */
+function viewPendingDocs() {
+  // 跳转到出库单或入库单的待审核列表
+  if (can('outbound.view')) {
+    // 有出库权限,跳转到出库单列表,并自动筛选pending状态
+    if (!DocState.filter) DocState.filter = {};
+    if (!DocState.filter.out) DocState.filter.out = { keyword: '', status: 'pending', from: monthStart(), to: todayStr() };
+    else DocState.filter.out.status = 'pending';
+    go('out');
+  } else if (can('inbound.view')) {
+    // 只有入库权限,跳转到入库单列表
+    if (!DocState.filter) DocState.filter = {};
+    if (!DocState.filter.in) DocState.filter.in = { keyword: '', status: 'pending', from: monthStart(), to: todayStr() };
+    else DocState.filter.in.status = 'pending';
+    go('in');
+  } else {
+    toast('你没有查看单据的权限', 'err');
+  }
 }

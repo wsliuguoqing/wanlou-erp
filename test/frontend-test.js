@@ -11,7 +11,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const WEB = path.join(__dirname, '..', 'src', 'web');
-const FILES = ['core.js', 'pages-docs.js', 'pages-base.js', 'pages-reports.js', 'pages-admin.js'];
+const FILES = ['core.js', 'pages-docs.js', 'pages-base.js', 'pages-reports.js', 'pages-trend.js', 'pages-admin.js'];
 
 const fakeEl = () => ({
   innerHTML: '', value: '', textContent: '', style: {}, classList: { add() {}, remove() {}, toggle() {} },
@@ -61,6 +61,7 @@ const EXPORTS = {
   'pages-docs.js': ['DOC_CONF', 'DocState'],
   'pages-base.js': ['BaseState'],
   'pages-reports.js': ['RepState'],
+  'pages-trend.js': ['TrendState'],
   'pages-admin.js': ['AdminState']
 };
 

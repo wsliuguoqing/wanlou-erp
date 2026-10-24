@@ -13,13 +13,18 @@ const DocState = { listData: {}, filter: {} };
 /* ---------------- 列表页 ---------------- */
 function makeDocListPage(key) {
   const conf = DOC_CONF[key];
-  const f = DocState.filter[key] = DocState.filter[key] || { keyword: '', status: '', from: monthStart(), to: todayStr() };
+  // 默认不限日期，避免单据因日期填错而看不到；需要时再手动筛选
+  const f = DocState.filter[key] = DocState.filter[key] || { keyword: '', status: '', from: '', to: '' };
 
   const p = () => {
     const d = DocState.listData[key] || { list: [] };
     const rows = (d.list || []).map(r => {
       const partner = r.partner_name || '—';
-      return `<tr>
+      // 待审核行加淡黄底，已驳回加淡红底，便于一眼区分
+      const rowBg = r.status === 'pending' ? 'background:#fdf8ec'
+        : r.status === 'rejected' ? 'background:#fdf0ec'
+        : r.status === 'draft' ? 'background:#f7f8f7' : '';
+      return `<tr style="${rowBg}">
         <td><a onclick="openDocDetail('${key}',${r.id})">${esc(r.sn)}</a></td>
         <td class="num">${esc(r.doc_date)}</td>
         <td>${esc(partner)}</td>
@@ -28,7 +33,7 @@ function makeDocListPage(key) {
         <td class="r num"><b>${money(r.total_amount)}</b></td>
         ${can('cost.view') ? `<td class="r num">${money(r.total_cost)}</td>` : ''}
         ${can('cost.view') ? `<td class="r num" style="color:var(--brand)">${money((r.total_amount || 0) - (r.total_cost || 0))}</td>` : ''}
-        <td>${statusTag(r.status)}</td>
+        <td>${statusTag(r.status)}${r.return_status === 'full' ? ' <span class="tag no">已全退</span>' : r.return_status === 'partial' ? ' <span class="tag wait">部分退货</span>' : ''}</td>
         <td>${payTag(r.pay_status)}</td>
         <td>
           <button class="btn sm" onclick="openDocDetail('${key}',${r.id})">查看</button>
@@ -42,18 +47,21 @@ function makeDocListPage(key) {
       <div class="bar">
         <input class="inp" style="width:180px" placeholder="单号 / 合同号" value="${esc(f.keyword)}"
           oninput="DocState.filter['${key}'].keyword=this.value" onkeydown="if(event.key==='Enter')loadDocList('${key}')">
-        <select class="inp" style="width:130px" onchange="DocState.filter['${key}'].status=this.value;loadDocList('${key}')">
-          <option value="">全部状态</option>
+        <select class="inp" style="width:140px" onchange="DocState.filter['${key}'].status=this.value;loadDocList('${key}')">
+          <option value="">全部(不含作废)</option>
           <option value="draft" ${f.status === 'draft' ? 'selected' : ''}>草稿</option>
           <option value="pending" ${f.status === 'pending' ? 'selected' : ''}>待审核</option>
           <option value="approved" ${f.status === 'approved' ? 'selected' : ''}>已审核</option>
           <option value="rejected" ${f.status === 'rejected' ? 'selected' : ''}>已驳回</option>
           <option value="void" ${f.status === 'void' ? 'selected' : ''}>已作废</option>
         </select>
-        <input class="inp" type="date" style="width:150px" value="${f.from}" onchange="DocState.filter['${key}'].from=this.value">
+        <input class="inp" type="date" style="width:148px" value="${f.from}" title="开始日期，留空表示不限"
+          onchange="DocState.filter['${key}'].from=this.value;loadDocList('${key}')">
         <span class="hint">至</span>
-        <input class="inp" type="date" style="width:150px" value="${f.to}" onchange="DocState.filter['${key}'].to=this.value">
+        <input class="inp" type="date" style="width:148px" value="${f.to}" title="结束日期，留空表示不限"
+          onchange="DocState.filter['${key}'].to=this.value;loadDocList('${key}')">
         <button class="btn" onclick="loadDocList('${key}')">查询</button>
+        ${(f.keyword || f.status || f.from || f.to) ? `<button class="btn" onclick="resetDocFilter('${key}')">清空条件</button>` : ''}
         <div class="spacer"></div>
         ${can(conf.permNew) ? `<button class="btn primary" onclick="openDocForm('${key}')">＋ 新建${conf.title}</button>` : ''}
       </div>
@@ -66,6 +74,11 @@ function makeDocListPage(key) {
   };
   p.afterRender = () => loadDocList(key);
   return p;
+}
+
+function resetDocFilter(key) {
+  DocState.filter[key] = { keyword: '', status: '', from: '', to: '' };
+  loadDocList(key);
 }
 
 async function loadDocList(key) {
@@ -84,7 +97,154 @@ async function loadDocList(key) {
 /* ---------------- 新建/编辑单据 ---------------- */
 const Draft = { data: null, materials: [], partners: [], warehouses: [], editing: null };
 
+/* ---------------- 退货单：先查原单再退 ---------------- */
+const RetDraft = { key: null, origin: null, items: [] };
+
+function openReturnForm(key) {
+  RetDraft.key = key;
+  RetDraft.origin = null;
+  RetDraft.items = [];
+  const label = key === 'sret' ? '出库单' : '入库单';
+  openDialog({
+    title: key === 'sret' ? '新建销售退货单' : '新建采购退货单',
+    size: 'lg',
+    body: `
+      <div class="field">
+        <label>原${label}号 *</label>
+        <div style="display:flex;gap:8px">
+          <input class="inp mono" id="ret-sn" placeholder="输入或扫码原${label}号，回车查询"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();lookupOrigin()}">
+          <button class="btn primary" onclick="lookupOrigin()">查询</button>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:8px">只有已审核的${label}可以退货。查到后在下面填写各行要退的数量，不填表示整行全退。</div>
+      <div id="ret-body" style="margin-top:16px"></div>`,
+    footer: `<button class="btn" onclick="closeDialog()">取消</button>
+      <span id="ret-actions"></span>`
+  });
+  setTimeout(() => document.getElementById('ret-sn')?.focus(), 60);
+}
+
+async function lookupOrigin() {
+  const sn = document.getElementById('ret-sn').value.trim();
+  if (!sn) return toast('请输入单号', 'err');
+  try {
+    const d = await api('/docs/lookup/' + encodeURIComponent(sn));
+    const want = RetDraft.key === 'sret' ? 'OUT' : 'IN';
+    if (d.doc.type !== want) {
+      return toast(`单号 ${sn} 是${d.doc.type === 'OUT' ? '出库单' : d.doc.type === 'IN' ? '入库单' : '其他单据'}，不能用于本类型退货`, 'err');
+    }
+    RetDraft.origin = d.doc;
+    // 默认全退：数量预填为可退数量
+    RetDraft.items = d.items.map(it => ({ ...it, ret_qty: it.returnable }));
+    renderReturnBody();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function renderReturnBody() {
+  const o = RetDraft.origin;
+  const key = RetDraft.key;
+  const canRet = RetDraft.items.some(it => it.returnable > 0);
+
+  const rows = RetDraft.items.map((it, i) => {
+    const isMaster = it.material_type === 'master';
+    const dec = isMaster ? 3 : 0;
+    const step = isMaster ? 0.1 : 1;
+    const done = it.returnable <= 0;
+    return `<tr style="${done ? 'opacity:.45' : ''}">
+      <td class="num" style="color:var(--faint)">${i + 1}</td>
+      <td><b>${esc(it.material_name)}</b><br><small class="hint">${esc(it.material_code)}${it.material_spec ? ' · ' + esc(it.material_spec) : ''}</small></td>
+      <td class="r num">${qty(it.qty)} ${esc(it.unit || '')}</td>
+      <td class="r num">${it.returned_qty > 0 ? qty(it.returned_qty) : '—'}</td>
+      <td class="r num"><b>${qty(it.returnable)}</b></td>
+      <td style="width:100px">
+        ${done ? '<span class="hint">已退完</span>'
+          : `<input class="num" type="number" min="0" max="${it.returnable}" step="${step}" value="${it.ret_qty || ''}"
+               oninput="onlyPositive(this,${dec});setRetQty(${i},this.value)" onblur="clampRetQty(${i},this)">`}
+      </td>
+      <td class="r num">${money(it.price)}</td>
+      <td class="r num cell-ret-amt"><b>${money((it.ret_qty || 0) * it.price)}</b></td>
+    </tr>`;
+  });
+
+  const total = RetDraft.items.reduce((s, it) => s + (Number(it.ret_qty) || 0) * it.price, 0);
+
+  document.getElementById('ret-body').innerHTML = `
+    <div class="banner" style="margin-bottom:12px">
+      原单 <b class="mono">${esc(o.sn)}</b> · ${esc(o.doc_date)} · ${esc(o.partner_name)}
+      · 仓库 ${esc(o.warehouse_name)} · 原金额 <b>${money(o.total_amount)}</b>
+    </div>
+    <table class="items">
+      <thead><tr>
+        <th style="width:34px"></th><th>物料</th>
+        <th class="r">原数量</th><th class="r">已退</th><th class="r">可退</th>
+        <th class="r">本次退</th><th class="r">单价</th><th class="r">退货金额</th>
+      </tr></thead>
+      <tbody>${rows.join('')}</tbody>
+    </table>
+    <div class="totals-area" style="display:flex;justify-content:flex-end;gap:28px;padding:14px 4px 2px;border-top:1px solid var(--line-2);margin-top:8px">
+      <div style="text-align:right"><div class="hint">退货金额合计</div><b class="num" id="ret-total" style="font-size:17px">${money(total)}</b></div>
+    </div>
+    <div class="field" style="margin-top:14px"><label>退货原因</label>
+      <input class="inp" id="ret-remark" placeholder="如客户少要、规格不符、质量问题"></div>`;
+
+  document.getElementById('ret-actions').innerHTML = canRet
+    ? `<button class="btn" onclick="saveReturn(false)">存为草稿</button>
+       <button class="btn primary" onclick="saveReturn(true)">提交审批</button>`
+    : '<span class="hint">该单各行均已退完</span>';
+}
+
+function setRetQty(i, v) {
+  RetDraft.items[i].ret_qty = Number(v) || 0;
+  const total = RetDraft.items.reduce((s, it) => s + (Number(it.ret_qty) || 0) * it.price, 0);
+  const el = document.getElementById('ret-total');
+  if (el) el.textContent = money(total);
+  const row = document.querySelectorAll('#ret-body .items tbody tr')[i];
+  const cell = row?.querySelector('.cell-ret-amt');
+  if (cell) cell.innerHTML = `<b>${money((Number(v) || 0) * RetDraft.items[i].price)}</b>`;
+}
+
+function clampRetQty(i, el) {
+  const it = RetDraft.items[i];
+  let v = Number(el.value) || 0;
+  if (v > it.returnable) {
+    v = it.returnable;
+    toast(`「${it.material_name}」最多只能退 ${qty(it.returnable)}`, 'err');
+  }
+  if (v < 0) v = 0;
+  el.value = v || '';
+  setRetQty(i, v);
+}
+
+async function saveReturn(submit) {
+  const o = RetDraft.origin;
+  if (!o) return toast('请先查询原单', 'err');
+  const items = RetDraft.items
+    .filter(it => (Number(it.ret_qty) || 0) > 0)
+    .map(it => ({
+      material_id: it.material_id, qty: Number(it.ret_qty),
+      price: it.price, cut_width: it.cut_width || 0, batch_no: it.batch_no || ''
+    }));
+  if (!items.length) return toast('至少填写一行退货数量', 'err');
+
+  const payload = {
+    doc_date: todayStr(), partner_id: o.partner_id, warehouse_id: o.warehouse_id,
+    contract_sn: o.contract_sn || '', salesperson_id: o.salesperson_id,
+    origin_doc_id: o.id, source_doc_id: o.id,
+    remark: (document.getElementById('ret-remark')?.value || '') + `（退 ${o.sn}）`,
+    items, submit
+  };
+  try {
+    await api(DOC_CONF[RetDraft.key].api, 'POST', payload);
+    closeDialog();
+    toast(submit ? '退货单已提交审批' : '已存为草稿', 'ok');
+    loadDocList(RetDraft.key);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function openDocForm(key, docId) {
+  // 退货单走「先查原单」的流程
+  if ((key === 'sret' || key === 'pret') && !docId) return openReturnForm(key);
   const conf = DOC_CONF[key];
   try {
     const [mats, partners, whs] = await Promise.all([
@@ -125,7 +285,13 @@ function renderDocForm(key) {
   const conf = DOC_CONF[key];
   const d = Draft.data;
   const isOut = key === 'out' || key === 'sret';
-  const showCost = can('cost.view');
+  // 入库单的单价就是采购价，不显示成本与毛利
+  const showCost = can('cost.view') && key !== 'in' && key !== 'pret';
+  // 只有本单包含可分切物料时才显示分切宽度列
+  const showCutCol = (key === 'out') && d.items.some(it => {
+    const m = Draft.materials.find(x => x.id === Number(it.material_id));
+    return m && m.type === 'master';
+  });
 
   const itemRows = d.items.map((it, i) => {
     const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
@@ -134,19 +300,28 @@ function renderDocForm(key) {
     const costPrice = computeCostPrice(m, it, key);
     const costAmount = costPrice * (Number(it.qty) || 0);
     const needCut = isMaster && (key === 'out' || key === 'pret');
-    return `<tr>
+    const avail = stockOf(m);
+    // 可分割物料数量允许小数，不可分割必须整数
+    const qtyStep = isMaster ? 0.1 : 1;
+    const qtyDec = isMaster ? 3 : 0;
+    return `<tr data-row="${i}">
       <td style="width:250px">
         <button class="btn sm" style="width:100%;text-align:left" onclick="pickMaterial(${i},'${key}')">
-          ${m.id ? `<span class="cell-pick"><b>${esc(m.name)}</b><small>${esc(m.code)} · ${esc(m.spec || '')} · ${esc(m.unit || '')}${isMaster ? ' · 母卷' : ''}</small></span>` : '<span class="hint">点击选择物料</span>'}
+          ${m.id ? `<span class="cell-pick"><b>${esc(m.name)}</b><small>${esc(m.code)}${m.spec ? ' · ' + esc(m.spec) : ''} · ${esc(m.unit || '')}${isMaster ? ' · 可分切' : ''}</small></span>` : '<span class="hint">点击选择物料</span>'}
         </button>
+        ${m.id && isOut ? `<div class="hint" style="margin-top:3px">可用 ${esc(avail)}</div>` : ''}
       </td>
-      ${needCut ? `<td style="width:86px"><input class="num" type="number" min="0" placeholder="宽度mm" value="${it.cut_width || ''}"
-          oninput="setItem(${i},'cut_width',this.value,'${key}')" title="分切宽度（填 0 表示整支出库）"></td>` : ''}
-      <td style="width:86px"><input class="num" type="number" min="0" step="0.001" value="${it.qty || ''}" oninput="setItem(${i},'qty',this.value,'${key}')"></td>
-      <td style="width:104px"><input class="num ${it._priceWarn ? 'warn' : ''}" type="number" min="0" step="0.01" value="${it.price ?? ''}" oninput="setItem(${i},'price',this.value,'${key}')"></td>
-      <td class="r num" style="width:110px">${money(amount)}</td>
-      ${showCost ? `<td class="r num" style="width:104px;color:var(--muted)">${money(costPrice)}</td>
-      <td class="r num" style="width:104px;color:var(--muted)">${money(costAmount)}</td>` : ''}
+      ${showCutCol ? (needCut
+        ? `<td style="width:92px"><input class="num" type="number" min="0" step="1" placeholder="宽度mm" value="${it.cut_width || ''}"
+            oninput="onlyPositive(this,0);setItem(${i},'cut_width',this.value,'${key}')" onblur="normalizeNum(this)" title="分切宽度，留空或 0 表示整支出库"></td>`
+        : '<td style="width:92px" class="hint">—</td>') : ''}
+      <td style="width:92px"><input class="num" type="number" min="0" step="${qtyStep}" value="${it.qty || ''}"
+        oninput="onlyPositive(this,${qtyDec});setItem(${i},'qty',this.value,'${key}')" onblur="normalizeNum(this)"></td>
+      <td style="width:104px"><input class="num ${it._priceWarn ? 'warn' : ''}" type="number" min="0" step="0.01" value="${it.price ?? ''}"
+        oninput="onlyPositive(this,2);setItem(${i},'price',this.value,'${key}')" onblur="normalizeNum(this)"></td>
+      <td class="r num cell-amount" style="width:110px">${money(amount)}</td>
+      ${showCost ? `<td class="r num cell-cost-price" style="width:104px;color:var(--muted)">${money(costPrice)}</td>
+      <td class="r num cell-cost-amount" style="width:104px;color:var(--muted)">${money(costAmount)}</td>` : ''}
       <td style="width:40px"><button class="btn sm danger" onclick="removeItem(${i},'${key}')">×</button></td>
     </tr>`;
   }).join('');
@@ -186,7 +361,8 @@ function renderDocForm(key) {
     ${isOut ? `<div class="form-grid" id="ship-area" style="margin-bottom:18px">
       <div class="field"><label>承运人</label><input class="inp" value="${esc(d.carrier)}" placeholder="如 京东快递 / 客户自提" oninput="Draft.data.carrier=this.value"></div>
       <div class="field"><label>收货人</label><input class="inp" value="${esc(d.receiver)}" oninput="Draft.data.receiver=this.value"></div>
-      <div class="field"><label>收货电话</label><input class="inp" value="${esc(d.receiver_phone)}" oninput="Draft.data.receiver_phone=this.value"></div>
+      <div class="field"><label>收货电话</label><input class="inp" value="${esc(d.receiver_phone)}"
+        placeholder="手机或固话" oninput="onlyPhone(this);Draft.data.receiver_phone=this.value"></div>
       <div class="field"><label>收货地址</label><input class="inp" value="${esc(d.receiver_addr)}" oninput="Draft.data.receiver_addr=this.value"></div>
     </div>` : ''}
 
@@ -194,9 +370,9 @@ function renderDocForm(key) {
     <table class="items">
       <thead><tr>
         <th>物料</th>
-        ${(key === 'out' || key === 'pret') ? '<th class="r">分切宽度</th>' : ''}
+        ${showCutCol ? '<th class="r">分切宽度</th>' : ''}
         <th class="r">数量</th>
-        <th class="r">单价</th>
+        <th class="r">${key === 'in' || key === 'pret' ? '进货单价' : '销售单价'}</th>
         <th class="r">金额</th>
         ${showCost ? '<th class="r">成本单价</th><th class="r">成本金额</th>' : ''}
         <th></th>
@@ -213,10 +389,10 @@ function renderDocForm(key) {
       </tbody>
     </table>
 
-    <div style="display:flex;justify-content:flex-end;gap:28px;padding:14px 4px 2px;border-top:1px solid var(--line-2);margin-top:8px">
+    <div class="totals-area" style="display:flex;justify-content:flex-end;gap:28px;padding:14px 4px 2px;border-top:1px solid var(--line-2);margin-top:8px">
       ${showCost ? `<div style="text-align:right"><div class="hint">成本合计</div><b class="num">${money(totals.cost)}</b></div>
       <div style="text-align:right"><div class="hint">毛利</div><b class="num" style="color:${profit >= 0 ? 'var(--brand)' : 'var(--rust)'}">${money(profit)}</b></div>` : ''}
-      <div style="text-align:right"><div class="hint">金额合计</div><b class="num" style="font-size:17px">${money(totals.amount)}</b></div>
+      <div style="text-align:right"><div class="hint">${key === 'in' || key === 'pret' ? '采购金额合计' : '金额合计'}</div><b class="num" style="font-size:17px">${money(totals.amount)}</b></div>
     </div>
 
     <div class="field" style="margin-top:16px"><label>备注</label>
@@ -233,6 +409,13 @@ function renderDocForm(key) {
   });
 }
 
+/** 物料可用库存的可读文本 */
+function stockOf(m) {
+  if (!m || !m.id) return '—';
+  if (m.type === 'master') return `${m.roll_count || 0} 支 / ${qty(m.open_width || 0)}mm`;
+  return `${qty(m.stock_qty || 0)} ${m.unit || ''}`;
+}
+
 function computeCostPrice(m, it, key) {
   if (!m || !m.id) return 0;
   if (m.type === 'master' && key === 'out' && Number(it.cut_width) > 0) {
@@ -244,12 +427,60 @@ function computeCostPrice(m, it, key) {
 
 function setItem(i, field, val, key) {
   const it = Draft.data.items[i];
-  it[field] = field === 'price' ? Number(val) : Number(val);
+  it[field] = Number(val);
   if (field === 'price') it._priceWarn = false;
-  const scroll = document.querySelector('.dlg-body').scrollTop;
-  renderDocForm(key);
-  document.querySelector('.dlg-body').scrollTop = scroll;
+
+  // 只更新当前行的金额和成本,不重建整个表单(避免焦点跳转)
+  const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
+  const amount = (Number(it.qty) || 0) * (Number(it.price) || 0);
+  const costPrice = computeCostPrice(m, it, key);
+  const costAmount = costPrice * (Number(it.qty) || 0);
+  const showCost = can('cost.view');
+
+  // 用 data-row 属性精确定位当前行,避免 nth-child 在行数变化时出错
+  const row = document.querySelector(`.items tbody tr[data-row="${i}"]`);
+  if (row) {
+    const amountCell = row.querySelector('.cell-amount');
+    const costPriceCell = row.querySelector('.cell-cost-price');
+    const costAmountCell = row.querySelector('.cell-cost-amount');
+    if (amountCell) amountCell.textContent = money(amount);
+    if (showCost && costPriceCell) costPriceCell.textContent = money(costPrice);
+    if (showCost && costAmountCell) costAmountCell.textContent = money(costAmount);
+  }
+
+  // 更新底部合计
+  updateTotals(key);
 }
+
+function updateTotals(key) {
+  const totals = Draft.data.items.reduce((a, it) => {
+    const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
+    const amt = (Number(it.qty) || 0) * (Number(it.price) || 0);
+    const cp = computeCostPrice(m, it, key);
+    a.amount += amt; a.cost += cp * (Number(it.qty) || 0);
+    return a;
+  }, { amount: 0, cost: 0 });
+  const profit = totals.amount - totals.cost;
+  const showCost = can('cost.view');
+
+  const sumArea = document.querySelector('.totals-area');
+  if (!sumArea) return;
+
+  const spans = sumArea.querySelectorAll('b.num');
+  if (showCost) {
+    // 有成本权限: 3个数字 [成本合计, 毛利, 金额合计]
+    if (spans[0]) spans[0].textContent = money(totals.cost);
+    if (spans[1]) {
+      spans[1].textContent = money(profit);
+      spans[1].style.color = profit >= 0 ? 'var(--brand)' : 'var(--rust)';
+    }
+    if (spans[2]) spans[2].textContent = money(totals.amount);
+  } else {
+    // 无成本权限: 只有1个数字 [金额合计]
+    if (spans[0]) spans[0].textContent = money(totals.amount);
+  }
+}
+
 
 function addItem(key) {
   Draft.data.items.push({ material_id: '', qty: 1, price: 0, cut_width: 0, remark: '' });
@@ -318,8 +549,41 @@ async function saveDoc(key, submit) {
   if (!d.partner_id) return toast('请选择' + conf.partnerLabel, 'err');
   if (!d.warehouse_id) return toast('请选择仓库', 'err');
   if (!d.items.length) return toast('至少添加一行明细', 'err');
-  const bad = d.items.find(i => !i.material_id || !(Number(i.qty) > 0));
-  if (bad) return toast('有明细未选择物料或数量为 0', 'err');
+
+  // 逐行校验：物料、数量、单价必填；整数限制；库存是否够
+  for (let i = 0; i < d.items.length; i++) {
+    const it = d.items[i];
+    const no = i + 1;
+    if (!it.material_id) return toast(`第 ${no} 行还没选物料`, 'err');
+    const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
+    const q = Number(it.qty) || 0;
+    if (q <= 0) return toast(`第 ${no} 行「${m.name || ''}」数量必须大于 0`, 'err');
+    if (m.type !== 'master' && !Number.isInteger(q)) {
+      return toast(`「${m.name}」不可分割，数量必须是整数`, 'err');
+    }
+    if (!(Number(it.price) > 0)) return toast(`第 ${no} 行「${m.name || ''}」单价必须填写`, 'err');
+
+    // 出库和采购退货要扣库存，提交前先核对
+    if (key === 'out' || key === 'pret') {
+      if (m.type === 'master') {
+        const cw = Number(it.cut_width) || 0;
+        if (cw > 0) {
+          if (m.base_width && cw > m.base_width) {
+            return toast(`「${m.name}」分切宽度 ${cw}mm 超过母卷宽度 ${m.base_width}mm`, 'err');
+          }
+          const need = cw * q;
+          if (need > (Number(m.open_width) || 0)) {
+            return toast(`「${m.name}」可用宽度只有 ${qty(m.open_width || 0)}mm，本单需要 ${qty(need)}mm，库存不足`, 'err');
+          }
+        } else if (q > (Number(m.roll_count) || 0)) {
+          return toast(`「${m.name}」只有 ${m.roll_count || 0} 支整卷，不够出 ${q} 支`, 'err');
+        }
+      } else if (q > (Number(m.stock_qty) || 0)) {
+        return toast(`「${m.name}」库存只有 ${qty(m.stock_qty || 0)} ${m.unit || ''}，不够出 ${qty(q)}`, 'err');
+      }
+    }
+  }
+
   if (submit && !can(conf.permNew) && !can(conf.permEdit)) return toast('没有提交权限', 'err');
 
   const payload = {
@@ -451,6 +715,59 @@ function rejectDoc(id, key) {
       } catch (e) { toast(e.message, 'err'); }
     }
   });
+}
+
+/* ---------------- 审核 ---------------- */
+async function openAudit(key, id, sn) {
+  const conf = DOC_CONF[key];
+  try {
+    const doc = await api(`${conf.api}/${id}`);
+    const rows = (doc.items || []).map((it, i) => `<tr>
+      <td class="num" style="color:var(--faint)">${i + 1}</td>
+      <td><b>${esc(it.material_name || '')}</b><br><small class="hint">${esc(it.material_code || '')}${it.material_spec ? ' · ' + esc(it.material_spec) : ''}</small></td>
+      <td class="r num">${qty(it.qty)} ${esc(it.unit || '')}</td>
+      ${it.cut_width ? `<td class="r num">${qty(it.cut_width)}mm</td>` : '<td class="hint">—</td>'}
+      <td class="r num">${money(it.price)}</td>
+      <td class="r num"><b>${money(it.amount)}</b></td>
+    </tr>`);
+
+    openDialog({
+      title: `审核 ${conf.title} ${sn}`,
+      size: 'lg',
+      body: `
+        <div class="form-grid" style="margin-bottom:14px">
+          <div class="field"><label>日期</label><div>${esc(doc.doc_date)}</div></div>
+          <div class="field"><label>${conf.partnerLabel}</label><div>${esc(doc.partner?.name || '')}</div></div>
+          <div class="field"><label>制单人</label><div>${esc(doc.creator_name || '')}</div></div>
+          <div class="field"><label>金额</label><div><b>${money(doc.total_amount)}</b></div></div>
+        </div>
+        <table class="items">
+          <thead><tr><th style="width:34px"></th><th>物料</th><th class="r">数量</th><th class="r">分切</th><th class="r">单价</th><th class="r">金额</th></tr></thead>
+          <tbody>${rows.join('') || '<tr><td colspan="6" class="empty">没有明细</td></tr>'}</tbody>
+        </table>
+        ${doc.remark ? `<div class="hint" style="margin-top:10px">备注：${esc(doc.remark)}</div>` : ''}
+        <div class="field" style="margin-top:16px">
+          <label>审核意见（驳回时必填）</label>
+          <input class="inp" id="audit-reason" placeholder="通过可不填；驳回请说明原因">
+        </div>
+        <div class="hint" style="margin-top:8px">通过后库存立即变动；驳回后退回制单人修改。</div>`,
+      footer: `
+        <button class="btn" onclick="closeDialog()">关闭</button>
+        <button class="btn danger" onclick="doAudit(${id},'${key}','reject')">驳回</button>
+        <button class="btn primary" onclick="doAudit(${id},'${key}','approve')">审核通过</button>`
+    });
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function doAudit(id, key, action) {
+  const reason = document.getElementById('audit-reason')?.value || '';
+  if (action === 'reject' && !reason.trim()) return toast('驳回必须填写原因', 'err');
+  try {
+    await api(`/docs/${id}/${action}`, 'POST', { reason });
+    closeDialog();
+    toast(action === 'approve' ? '审核通过，库存已变动' : '已驳回', 'ok');
+    loadDocList(key);
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function submitDoc(id, key) {

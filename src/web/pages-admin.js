@@ -58,7 +58,8 @@ function editUser(id) {
         <select class="inp" id="u-role-sel">
           ${Object.entries(ROLE_NAME).map(([k, v]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${v}</option>`).join('')}
         </select></div>
-      <div class="field"><label>电话</label><input class="inp" id="u-phone" value="${esc(u.phone || '')}"></div>
+      <div class="field"><label>手机号</label><input class="inp" id="u-phone" value="${esc(u.phone || '')}"
+        placeholder="11 位手机号" maxlength="11" oninput="onlyMobile(this)"></div>
       ${!id ? `<div class="field"><label>初始密码 *</label><input class="inp" id="u-pwd" value="123456" placeholder="至少6位"></div>` : ''}
     </div>
     <div class="hint" style="margin-top:12px">角色决定这个账号能看什么、能做什么。可在「角色权限」页面调整各角色的具体权限。</div>`,

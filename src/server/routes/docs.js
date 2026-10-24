@@ -7,6 +7,10 @@ const { route, bad, notFound, forbidden, logAction } = require('../http-framewor
 const { db, now, today } = require('../db');
 const { nextCode } = require('./base');
 
+/* 退货单引用的原单（出库单/入库单）。老库升级时补字段 */
+try { db.exec('ALTER TABLE docs ADD COLUMN origin_doc_id INTEGER'); } catch { /* 已存在 */ }
+try { db.exec('ALTER TABLE docs ADD COLUMN return_status TEXT'); } catch { /* 已存在 */ }
+
 /* 记录库存影响，便于作废时精确回滚 */
 db.exec(`CREATE TABLE IF NOT EXISTS stock_effects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,22 +260,23 @@ function saveDoc(ctx, docId, type, submit) {
     const sn = makeSn(type);
     const r = db.prepare(`INSERT INTO docs(type,sn,doc_date,partner_id,warehouse_id,contract_sn,salesperson_id,status,
         total_amount,total_cost,invoice_status,carrier,receiver,receiver_phone,receiver_addr,remark,source_doc_id,
-        created_by,created_at,submitted_at)
-        VALUES (?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,?,?,?,?,?)`)
+        origin_doc_id,created_by,created_at,submitted_at)
+        VALUES (?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(type, sn, docDate, b.partner_id, b.warehouse_id, b.contract_sn || '',
         b.salesperson_id || ctx.user.userId, status,
         Number(b.invoice_status) || 0, b.carrier || '', b.receiver || '',
         b.receiver_phone || '', b.receiver_addr || '', b.remark || '',
-        b.source_doc_id || null, ctx.user.userId, now(), submit ? now() : null);
+        b.source_doc_id || null, b.origin_doc_id || null,
+        ctx.user.userId, now(), submit ? now() : null);
     id = Number(r.lastInsertRowid);
   } else {
     db.prepare(`UPDATE docs SET doc_date=?,partner_id=?,warehouse_id=?,contract_sn=?,salesperson_id=?,status=?,
                 invoice_status=?,carrier=?,receiver=?,receiver_phone=?,receiver_addr=?,remark=?,source_doc_id=?,
-                submitted_at=?,audit_reason=NULL WHERE id=?`)
+                origin_doc_id=?,submitted_at=?,audit_reason=NULL WHERE id=?`)
       .run(docDate, b.partner_id, b.warehouse_id, b.contract_sn || '', b.salesperson_id || ctx.user.userId,
         status, Number(b.invoice_status) || 0, b.carrier || '', b.receiver || '',
         b.receiver_phone || '', b.receiver_addr || '', b.remark || '',
-        b.source_doc_id || null, submit ? now() : null, id);
+        b.source_doc_id || null, b.origin_doc_id || null, submit ? now() : null, id);
     db.prepare('DELETE FROM doc_items WHERE doc_id=?').run(id);
   }
 
@@ -444,7 +449,34 @@ function approveDoc(ctx, docId) {
   db.prepare(`UPDATE docs SET status='approved', audited_by=?, audited_at=?, total_cost=? WHERE id=?`)
     .run(ctx.user.userId, now(), round2(totalCost), docId);
   calcDoc(docId);
+
+  // 退货单审核通过后，回写原单的退货状态（部分退货 / 全部退货）
+  if ((doc.type === 'SRET' || doc.type === 'PRET') && doc.origin_doc_id) {
+    syncOriginReturnStatus(doc.origin_doc_id, doc.type);
+  }
+
   logAction(ctx, 'approve', doc.type.toLowerCase(), `审核通过 ${doc.sn}`);
+}
+
+/** 根据已退数量，标记原单为部分退货或全部退货 */
+function syncOriginReturnStatus(originId, retType) {
+  const origin = db.prepare('SELECT * FROM docs WHERE id=?').get(originId);
+  if (!origin) return;
+  const originItems = db.prepare('SELECT material_id, SUM(qty) q FROM doc_items WHERE doc_id=? GROUP BY material_id').all(originId);
+  const retRows = db.prepare(`SELECT ri.material_id, COALESCE(SUM(ri.qty),0) q
+                              FROM docs rd JOIN doc_items ri ON ri.doc_id=rd.id
+                              WHERE rd.type=? AND rd.origin_doc_id=? AND rd.status='approved'
+                              GROUP BY ri.material_id`).all(retType, originId);
+  const retMap = new Map(retRows.map(r => [r.material_id, r.q]));
+
+  let anyReturned = false, allReturned = originItems.length > 0;
+  for (const it of originItems) {
+    const r = retMap.get(it.material_id) || 0;
+    if (r > 0) anyReturned = true;
+    if (r + 1e-9 < it.q) allReturned = false;
+  }
+  const st = allReturned ? 'full' : (anyReturned ? 'partial' : null);
+  db.prepare('UPDATE docs SET return_status=? WHERE id=?').run(st, originId);
 }
 
 /* ---------------- 作废：回滚库存 ---------------- */
@@ -483,6 +515,12 @@ function voidDoc(ctx, docId) {
   }
   db.prepare("UPDATE docs SET status='void', void_reason=? WHERE id=?")
     .run(ctx.body.reason || '', docId);
+
+  // 作废退货单后，原单的退货状态要跟着回退
+  if ((doc.type === 'SRET' || doc.type === 'PRET') && doc.origin_doc_id) {
+    syncOriginReturnStatus(doc.origin_doc_id, doc.type);
+  }
+
   logAction(ctx, 'void', doc.type.toLowerCase(), `作废单据 ${doc.sn}，库存已回滚`);
   return {};
 }
@@ -505,7 +543,13 @@ function listRoute(type) {
     const args = [meta.partner, meta.partner, meta.partner, type];
     if (ctx.user.role === 'sales') { sql += ' AND (d.created_by = ? OR d.salesperson_id = ?)'; args.push(ctx.user.userId, ctx.user.userId); }
     if (keyword) { sql += ' AND (d.sn LIKE ? OR d.contract_sn LIKE ?)'; args.push(`%${keyword}%`, `%${keyword}%`); }
-    if (status) { sql += ' AND d.status = ?'; args.push(status); }
+    if (status) {
+      sql += ' AND d.status = ?';
+      args.push(status);
+    } else {
+      // 默认只显示非作废状态的单据(草稿、待审核、已审核、已驳回),需要看作废的单据时手动筛选
+      sql += " AND d.status != 'void'";
+    }
     if (from) { sql += ' AND d.doc_date >= ?'; args.push(from); }
     if (to) { sql += ' AND d.doc_date <= ?'; args.push(to); }
     sql += ' ORDER BY d.id DESC LIMIT 500';
@@ -634,6 +678,59 @@ route('POST', '/api/docs/:id/payment', async (ctx) => {
   logAction(ctx, isReceive ? 'receive' : 'pay', doc.type.toLowerCase(),
     `${doc.sn} 登记${isReceive ? '收款' : '付款'} ${amount}`);
   return { paid_amount: round2(paid), pay_status: status };
+});
+
+/* ---------- 按单号查原单，供退货引用 ---------- */
+route('GET', '/api/docs/lookup/:sn', async (ctx) => {
+  const sn = String(ctx.params.sn || '').trim();
+  if (!sn) bad('请输入单号');
+  const doc = db.prepare('SELECT * FROM docs WHERE sn=?').get(sn);
+  if (!doc) notFound(`没有找到单号 ${sn}`);
+
+  const meta = DOC_META[doc.type];
+  ctx.need(meta.view);
+  if (doc.status !== 'approved') bad(`单号 ${sn} 当前状态是「${STATUS_NAME[doc.status]}」，只有已审核的单据才能退货`);
+  if (ctx.user.role === 'sales' && doc.created_by !== ctx.user.userId && doc.salesperson_id !== ctx.user.userId) {
+    forbidden('只能查询自己的单据');
+  }
+
+  const partnerTable = meta.partner === 'customer' ? 'customers' : 'suppliers';
+  const partner = db.prepare(`SELECT id,name FROM ${partnerTable} WHERE id=?`).get(doc.partner_id);
+  const warehouse = db.prepare('SELECT name FROM warehouses WHERE id=?').get(doc.warehouse_id);
+  const items = db.prepare(`SELECT i.*, m.name AS material_name, m.code AS material_code,
+                                   m.spec AS material_spec, m.unit, m.type AS material_type
+                            FROM doc_items i LEFT JOIN materials m ON m.id=i.material_id
+                            WHERE i.doc_id=?`).all(doc.id);
+
+  // 该单已退过多少，避免重复退
+  const retType = doc.type === 'OUT' ? 'SRET' : 'PRET';
+  const returned = db.prepare(`SELECT ri.material_id, COALESCE(SUM(ri.qty),0) q
+                               FROM docs rd JOIN doc_items ri ON ri.doc_id=rd.id
+                               WHERE rd.type=? AND rd.origin_doc_id=? AND rd.status IN ('pending','approved')
+                               GROUP BY ri.material_id`).all(retType, doc.id);
+  const retMap = new Map(returned.map(r => [r.material_id, r.q]));
+
+  return {
+    doc: {
+      id: doc.id, sn: doc.sn, type: doc.type, doc_date: doc.doc_date,
+      partner_id: doc.partner_id, partner_name: partner?.name || '',
+      warehouse_id: doc.warehouse_id, warehouse_name: warehouse?.name || '',
+      contract_sn: doc.contract_sn, total_amount: doc.total_amount,
+      salesperson_id: doc.salesperson_id
+    },
+    items: items.map(it => {
+      const already = retMap.get(it.material_id) || 0;
+      return {
+        material_id: it.material_id, material_name: it.material_name,
+        material_code: it.material_code, material_spec: it.material_spec,
+        unit: it.unit, material_type: it.material_type,
+        qty: it.qty, price: it.price, amount: it.amount,
+        cut_width: it.cut_width, batch_no: it.batch_no,
+        returned_qty: already,
+        returnable: round3(Math.max(0, it.qty - already))
+      };
+    })
+  };
 });
 
 /* ---------- 开票 ---------- */

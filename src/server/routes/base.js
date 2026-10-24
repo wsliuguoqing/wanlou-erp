@@ -113,7 +113,17 @@ route('DELETE', '/api/suppliers/:id', async (ctx) => {
 });
 
 /* ==================== 物料 ==================== */
-const MATERIAL_TYPES = { normal: '普通', master: '母卷', sub: '子卷', waste: '料头', product: '成品' };
+/**
+ * normal = 不可分割（整件出入库，如电缆附件、接头、端子）
+ * master = 可分割母卷（如胶带整支，出库时按宽度分切）
+ * sub    = 已分切子卷（系统自动生成，不手工新建）
+ * waste  = 料头（剩余宽度不足，系统自动标记）
+ */
+const MATERIAL_TYPES = { normal: '不可分割', master: '可分割母卷', sub: '已分切子卷', waste: '料头' };
+/** 新建物料时可选的类型（子卷和料头由系统生成） */
+const CREATABLE_TYPES = { normal: '不可分割', master: '可分割母卷' };
+/** 常用单位 */
+const COMMON_UNITS = ['个', '只', '套', '台', '件', '箱', '盒', '包', '卷', '支', '米', '千克', '吨', '付', '张', '片'];
 
 route('GET', '/api/materials', async (ctx) => {
   ctx.need('material.view');
@@ -141,23 +151,25 @@ route('GET', '/api/materials', async (ctx) => {
     if (!showCost) { delete item.cost; }
     return item;
   });
-  return { list, types: MATERIAL_TYPES };
+  return { list, types: MATERIAL_TYPES, creatableTypes: CREATABLE_TYPES, units: COMMON_UNITS };
 });
 
 route('POST', '/api/materials', async (ctx) => {
   ctx.need('material.create');
   const b = ctx.body;
-  if (!b.name || !b.unit) bad('物料名称和单位必填');
+  if (!b.name) bad('物料名称必填');
+  if (!b.unit) bad('请选择计量单位');
   const type = b.type || 'normal';
-  if (!MATERIAL_TYPES[type]) bad('物料类型不合法');
-  if (type === 'master' && !(Number(b.base_width) > 0)) bad('母卷必须填写初始宽度');
+  if (!CREATABLE_TYPES[type]) bad('物料类型只能是不可分割或可分割母卷');
+  if (type === 'master' && !(Number(b.base_width) > 0)) bad('可分割母卷必须填写整支宽度（毫米）');
   const code = b.code || nextCode('materials', 'M');
   if (db.prepare('SELECT id FROM materials WHERE code=?').get(code)) bad('物料编号已存在');
   const r = db.prepare(`INSERT INTO materials(code,name,brand,spec,unit,type,barcode,base_width,min_waste,cut_fee,parent_id,safety_stock,cost,batch_manage,status,created_at)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`)
     .run(code, b.name, b.brand || '', b.spec || '', b.unit, type, b.barcode || '',
       Number(b.base_width) || null, Number(b.min_waste) || 10, Number(b.cut_fee) || 0,
-      b.parent_id || null, Number(b.safety_stock) || 0, Number(b.cost) || 0,
+      b.parent_id || null, Number(b.safety_stock) || 0,
+      0,  // 成本由入库单决定，新建物料时一律为 0
       b.batch_manage ? 1 : 0, now());
   logAction(ctx, 'create', 'material', `新增物料 ${b.name}`);
   return { id: Number(r.lastInsertRowid), code };
@@ -219,6 +231,28 @@ route('PUT', '/api/warehouses/:id', async (ctx) => {
     .run(b.name ?? w.name, b.address ?? w.address, b.keeper ?? w.keeper,
       b.status !== undefined ? Number(b.status) : w.status, id);
   logAction(ctx, 'update', 'warehouse', `编辑仓库 ${w.name}`);
+  return {};
+});
+
+route('DELETE', '/api/warehouses/:id', async (ctx) => {
+  if (ctx.user.role !== 'admin') forbidden('只有超级管理员可以删除仓库');
+  const id = Number(ctx.params.id);
+  const w = db.prepare('SELECT * FROM warehouses WHERE id=?').get(id);
+  if (!w) notFound('仓库不存在');
+
+  const docCount = db.prepare('SELECT COUNT(*) n FROM docs WHERE warehouse_id=?').get(id).n;
+  if (docCount > 0) bad(`该仓库关联了 ${docCount} 张单据，不能删除。可以改为「停用」，停用后不再出现在新建单据的选项里。`);
+
+  const invQty = db.prepare('SELECT COALESCE(SUM(qty),0) s FROM inventory WHERE warehouse_id=?').get(id).s;
+  const rollCount = db.prepare("SELECT COUNT(*) n FROM rolls WHERE warehouse_id=? AND status!='used'").get(id).n;
+  if (invQty > 0 || rollCount > 0) bad('该仓库还有库存，请先出库或调拨后再删除');
+
+  const whCount = db.prepare('SELECT COUNT(*) n FROM warehouses').get().n;
+  if (whCount <= 1) bad('至少要保留一个仓库');
+
+  db.prepare('DELETE FROM inventory WHERE warehouse_id=?').run(id);
+  db.prepare('DELETE FROM warehouses WHERE id=?').run(id);
+  logAction(ctx, 'delete', 'warehouse', `删除仓库 ${w.name}`);
   return {};
 });
 

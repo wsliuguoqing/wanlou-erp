@@ -51,7 +51,8 @@ function editCustomer(id) {
     body: `<div class="form-grid">
       <div class="field"><label>客户名称 *</label><input class="inp" id="c-name" value="${esc(c.name || '')}"></div>
       <div class="field"><label>联系人</label><input class="inp" id="c-contact" value="${esc(c.contact || '')}"></div>
-      <div class="field"><label>电话</label><input class="inp" id="c-phone" value="${esc(c.phone || '')}"></div>
+      <div class="field"><label>电话</label><input class="inp" id="c-phone" value="${esc(c.phone || '')}"
+        placeholder="手机或固话，可带横线" oninput="onlyPhone(this)"></div>
       <div class="field"><label>地址</label><input class="inp" id="c-addr" value="${esc(c.address || '')}"></div>
       <div class="field"><label>客户级别</label>
         <select class="inp" id="c-level">
@@ -134,7 +135,8 @@ function editSupplier(id) {
     body: `<div class="form-grid">
       <div class="field"><label>供应商名称 *</label><input class="inp" id="s-name" value="${esc(s.name || '')}"></div>
       <div class="field"><label>联系人</label><input class="inp" id="s-contact" value="${esc(s.contact || '')}"></div>
-      <div class="field"><label>电话</label><input class="inp" id="s-phone" value="${esc(s.phone || '')}"></div>
+      <div class="field"><label>电话</label><input class="inp" id="s-phone" value="${esc(s.phone || '')}"
+        placeholder="手机或固话，可带横线" oninput="onlyPhone(this)"></div>
       <div class="field"><label>地址</label><input class="inp" id="s-addr" value="${esc(s.address || '')}"></div>
       <div class="field" style="grid-column:1/-1"><label>备注</label><input class="inp" id="s-remark" value="${esc(s.remark || '')}"></div>
     </div>`,
@@ -211,34 +213,57 @@ async function loadMaterials(kw = '', type = '') {
   try {
     const d = await api(`/materials?keyword=${encodeURIComponent(kw)}&type=${type}`);
     BaseState.materials = d.list;
+    if (d.units) BaseState.units = d.units;
+    if (d.types) BaseState.matTypes = d.types;
     if (App.route === 'materials') document.getElementById('page').innerHTML = PAGES.materials();
   } catch (e) { toast(e.message, 'err'); }
 }
 
 function editMaterial(id) {
   const m = id ? BaseState.materials.find(x => x.id === id) : {};
+  const units = BaseState.units || ['个', '只', '套', '台', '件', '箱', '盒', '包', '卷', '支', '米', '千克', '吨', '付', '张', '片'];
+  const isSub = m.type === 'sub' || m.type === 'waste';
   openDialog({
     title: id ? '编辑物料' : '新增物料',
-    body: `<div class="form-grid">
-      <div class="field"><label>物料名称 *</label><input class="inp" id="m-name" value="${esc(m.name || '')}"></div>
-      <div class="field"><label>品牌</label><input class="inp" id="m-brand" value="${esc(m.brand || '')}"></div>
-      <div class="field"><label>规格</label><input class="inp" id="m-spec" value="${esc(m.spec || '')}" placeholder="如 19mm×50m"></div>
-      <div class="field"><label>单位 *</label><input class="inp" id="m-unit" value="${esc(m.unit || '卷')}"></div>
-      <div class="field"><label>类型 *</label>
-        <select class="inp" id="m-type" onchange="toggleMasterFields()">
-          <option value="normal" ${m.type === 'normal' ? 'selected' : ''}>普通</option>
-          <option value="master" ${m.type === 'master' ? 'selected' : ''}>母卷（可分切）</option>
-          <option value="product" ${m.type === 'product' ? 'selected' : ''}>成品</option>
+    body: `
+    ${isSub ? '<div class="banner" style="margin-bottom:12px">这是系统自动生成的子卷或料头，只能改名称和安全库存。</div>' : ''}
+    <div class="form-grid">
+      <div class="field"><label>物料名称 *</label>
+        <input class="inp" id="m-name" value="${esc(m.name || '')}" placeholder="如 10kV冷缩中间接头"></div>
+      <div class="field"><label>型号</label>
+        <input class="inp" id="m-spec" value="${esc(m.spec || '')}" placeholder="如 JLS-10/3.1"></div>
+      <div class="field"><label>品牌</label>
+        <input class="inp" id="m-brand" value="${esc(m.brand || '')}" placeholder="如 3M、长园"></div>
+      <div class="field"><label>计量单位 *</label>
+        <select class="inp" id="m-unit">
+          ${units.map(u => `<option value="${u}" ${(m.unit || '个') === u ? 'selected' : ''}>${u}</option>`).join('')}
         </select></div>
-      <div class="field"><label>条码</label><input class="inp" id="m-barcode" value="${esc(m.barcode || '')}"></div>
-      <div class="field"><label>初始成本</label><input class="inp num" id="m-cost" type="number" step="0.01" value="${m.cost ?? ''}"></div>
-      <div class="field"><label>安全库存</label><input class="inp num" id="m-safety" type="number" step="0.001" value="${m.safety_stock ?? 0}"></div>
+      <div class="field"><label>是否可分割 *</label>
+        <select class="inp" id="m-type" onchange="toggleMasterFields()" ${isSub ? 'disabled' : ''}>
+          <option value="normal" ${(m.type || 'normal') === 'normal' ? 'selected' : ''}>不可分割（整件出库）</option>
+          <option value="master" ${m.type === 'master' ? 'selected' : ''}>可分割（整支按宽度分切）</option>
+          ${isSub ? `<option value="${m.type}" selected>${m.type === 'sub' ? '已分切子卷' : '料头'}</option>` : ''}
+        </select></div>
+      <div class="field"><label>条码</label>
+        <input class="inp" id="m-barcode" value="${esc(m.barcode || '')}" placeholder="扫码枪可直接扫入"></div>
+      <div class="field"><label>安全库存</label>
+        <input class="inp num" id="m-safety" type="number" min="0" step="1" value="${m.safety_stock ?? 0}"
+          oninput="onlyPositive(this,0)" onblur="normalizeNum(this)"></div>
       <div class="field" id="m-width-f" style="display:${m.type === 'master' ? 'flex' : 'none'}">
-        <label>母卷宽度 mm *</label><input class="inp num" id="m-width" type="number" value="${m.base_width ?? 1200}"></div>
+        <label>整支宽度 mm *</label>
+        <input class="inp num" id="m-width" type="number" min="0" step="1" value="${m.base_width ?? 1200}"
+          oninput="onlyPositive(this,0)"></div>
       <div class="field" id="m-fee-f" style="display:${m.type === 'master' ? 'flex' : 'none'}">
-        <label>分切费 元/卷</label><input class="inp num" id="m-fee" type="number" step="0.01" value="${m.cut_fee ?? 0.5}"></div>
+        <label>分切费 元/卷</label>
+        <input class="inp num" id="m-fee" type="number" min="0" step="0.01" value="${m.cut_fee ?? 0.5}"
+          oninput="onlyPositive(this,2)"></div>
       <div class="field" id="m-waste-f" style="display:${m.type === 'master' ? 'flex' : 'none'}">
-        <label>料头阈值 mm</label><input class="inp num" id="m-waste" type="number" value="${m.min_waste ?? 10}"></div>
+        <label>料头阈值 mm</label>
+        <input class="inp num" id="m-waste" type="number" min="0" step="1" value="${m.min_waste ?? 10}"
+          oninput="onlyPositive(this,0)"></div>
+    </div>
+    <div class="hint" style="margin-top:12px">
+      成本由入库单的进货价自动计算，这里不需要填。可分割物料出库时会按「宽度 × 卷数」扣减整支宽度。
     </div>`,
     footer: `<button class="btn" onclick="closeDialog()">取消</button>
       <button class="btn primary" onclick="saveMaterial(${id || 0})">保存</button>`
@@ -248,7 +273,8 @@ function editMaterial(id) {
 function toggleMasterFields() {
   const isMaster = document.getElementById('m-type').value === 'master';
   ['m-width-f', 'm-fee-f', 'm-waste-f'].forEach(id => {
-    document.getElementById(id).style.display = isMaster ? 'flex' : 'none';
+    const el = document.getElementById(id);
+    if (el) el.style.display = isMaster ? 'flex' : 'none';
   });
 }
 
@@ -261,7 +287,6 @@ async function saveMaterial(id) {
     unit: document.getElementById('m-unit').value.trim(),
     type,
     barcode: document.getElementById('m-barcode').value,
-    cost: Number(document.getElementById('m-cost').value) || 0,
     safety_stock: Number(document.getElementById('m-safety').value) || 0
   };
   if (type === 'master') {
@@ -292,7 +317,10 @@ page('warehouses', () => {
     <td>${esc(w.address || '')}</td>
     <td>${esc(w.keeper || '')}</td>
     <td>${w.status ? '<span class="tag ok">启用</span>' : '<span class="tag mute">停用</span>'}</td>
-    <td>${can('warehouse.manage') ? `<button class="btn sm" onclick="editWarehouse(${w.id})">编辑</button>` : ''}</td>
+    <td>
+      ${can('warehouse.manage') ? `<button class="btn sm" onclick="editWarehouse(${w.id})">编辑</button>` : ''}
+      ${App.user.role === 'admin' ? `<button class="btn sm danger" onclick="delWarehouse(${w.id},'${esc(w.name)}')">删除</button>` : ''}
+    </td>
   </tr>`);
   return `
     <h1 class="pg">仓库管理</h1>
@@ -325,6 +353,13 @@ function editWarehouse(id) {
     footer: `<button class="btn" onclick="closeDialog()">取消</button>
       <button class="btn primary" onclick="saveWarehouse(${id || 0})">保存</button>`
   });
+}
+
+function delWarehouse(id, name) {
+  confirmDialog(`确定删除仓库「${name}」？如果该仓库有库存或关联单据，系统会拒绝并提示你改用停用。`, async () => {
+    try { await api('/warehouses/' + id, 'DELETE'); toast('已删除', 'ok'); loadWarehouses(); }
+    catch (e) { toast(e.message, 'err'); }
+  }, '确认删除仓库');
 }
 
 async function saveWarehouse(id) {
