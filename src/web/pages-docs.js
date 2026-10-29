@@ -14,10 +14,15 @@ const DocState = { listData: {}, filter: {} };
 function makeDocListPage(key) {
   const conf = DOC_CONF[key];
   // 默认不限日期，避免单据因日期填错而看不到；需要时再手动筛选
-  const f = DocState.filter[key] = DocState.filter[key] || { keyword: '', status: '', from: '', to: '' };
+  const f = DocState.filter[key] = Object.assign(
+    { keyword: '', status: '', from: '', to: '', supplier: '', contract: '', model: '', customer: '', product: '', brand: '', material_keyword: '', salesperson: '' },
+    DocState.filter[key] || {}
+  );
 
   const p = () => {
     const d = DocState.listData[key] || { list: [] };
+    const showCostCol = can('cost.view') && key !== 'in' && key !== 'pret';
+    const showPayCol = key !== 'in' && key !== 'pret';
     const rows = (d.list || []).map(r => {
       const partner = r.partner_name || '—';
       // 待审核行加淡黄底，已驳回加淡红底，便于一眼区分
@@ -28,13 +33,13 @@ function makeDocListPage(key) {
         <td><a onclick="openDocDetail('${key}',${r.id})">${esc(r.sn)}</a></td>
         <td class="num">${esc(r.doc_date)}</td>
         <td>${esc(partner)}</td>
-        ${conf.needSales ? `<td>${esc(r.creator_name || '')}</td>` : `<td>${esc(r.creator_name || '')}</td>`}
+        <td>${esc(key === 'out' ? (r.salesperson_name || r.creator_name || '') : (r.creator_name || ''))}</td>
         <td class="mono">${esc(r.contract_sn || '—')}</td>
         <td class="r num"><b>${money(r.total_amount)}</b></td>
-        ${can('cost.view') ? `<td class="r num">${money(r.total_cost)}</td>` : ''}
-        ${can('cost.view') ? `<td class="r num" style="color:var(--brand)">${money((r.total_amount || 0) - (r.total_cost || 0))}</td>` : ''}
+        ${showCostCol ? `<td class="r num">${money(r.total_cost)}</td>` : ''}
+        ${showCostCol ? `<td class="r num" style="color:var(--brand)">${money((r.total_amount || 0) - (r.total_cost || 0))}</td>` : ''}
         <td>${statusTag(r.status)}${r.return_status === 'full' ? ' <span class="tag no">已全退</span>' : r.return_status === 'partial' ? ' <span class="tag wait">部分退货</span>' : ''}</td>
-        <td>${payTag(r.pay_status)}</td>
+        ${showPayCol ? `<td>${payTag(r.pay_status)}</td>` : ''}
         <td>
           <button class="btn sm" onclick="openDocDetail('${key}',${r.id})">查看</button>
           ${r.status === 'pending' && conf.permAudit && can(conf.permAudit) ? `<button class="btn sm primary" onclick="openAudit('${key}',${r.id},'${esc(r.sn)}')">审核</button>` : ''}
@@ -44,7 +49,7 @@ function makeDocListPage(key) {
     return `
       <h1 class="pg">${conf.title}</h1>
       <p class="pg-sub">共 ${rows.length} 张，合计金额 <b>${money(d.totalAmount)}</b>${can('cost.view') ? '' : '（成本与利润仅管理员可见）'}</p>
-      <div class="bar">
+      <div class="bar" style="flex-wrap:wrap">
         <input class="inp" style="width:180px" placeholder="单号 / 合同号" value="${esc(f.keyword)}"
           oninput="DocState.filter['${key}'].keyword=this.value" onkeydown="if(event.key==='Enter')loadDocList('${key}')">
         <select class="inp" style="width:140px" onchange="DocState.filter['${key}'].status=this.value;loadDocList('${key}')">
@@ -60,31 +65,49 @@ function makeDocListPage(key) {
         <span class="hint">至</span>
         <input class="inp" type="date" style="width:148px" value="${f.to}" title="结束日期，留空表示不限"
           onchange="DocState.filter['${key}'].to=this.value;loadDocList('${key}')">
+        ${key === 'in' ? `
+          <input class="inp" style="width:160px" placeholder="供应商名称" value="${esc(f.supplier)}" oninput="DocState.filter.in.supplier=this.value" onkeydown="if(event.key==='Enter')loadDocList('in')">
+          <input class="inp" style="width:150px" placeholder="合同编号" value="${esc(f.contract)}" oninput="DocState.filter.in.contract=this.value" onkeydown="if(event.key==='Enter')loadDocList('in')">
+          <input class="inp" style="width:150px" placeholder="物料型号" value="${esc(f.model)}" oninput="DocState.filter.in.model=this.value" onkeydown="if(event.key==='Enter')loadDocList('in')">` : ''}
+        ${key === 'out' ? `
+          <input class="inp" style="width:150px" placeholder="客户名称" value="${esc(f.customer)}" oninput="DocState.filter.out.customer=this.value" onkeydown="if(event.key==='Enter')loadDocList('out')">
+          <input class="inp" style="width:140px" placeholder="产品名称" value="${esc(f.product)}" oninput="DocState.filter.out.product=this.value" onkeydown="if(event.key==='Enter')loadDocList('out')">
+          <input class="inp" style="width:120px" placeholder="品牌" value="${esc(f.brand)}" oninput="DocState.filter.out.brand=this.value" onkeydown="if(event.key==='Enter')loadDocList('out')">
+          <input class="inp" style="width:140px" placeholder="物料关键词" value="${esc(f.material_keyword)}" oninput="DocState.filter.out.material_keyword=this.value" onkeydown="if(event.key==='Enter')loadDocList('out')">
+          <input class="inp" style="width:140px" placeholder="销售人员 / 工号" value="${esc(f.salesperson)}" oninput="DocState.filter.out.salesperson=this.value" onkeydown="if(event.key==='Enter')loadDocList('out')">
+          <input class="inp" style="width:150px" placeholder="销售合同编号" value="${esc(f.contract)}" oninput="DocState.filter.out.contract=this.value" onkeydown="if(event.key==='Enter')loadDocList('out')">` : ''}
         <button class="btn" onclick="loadDocList('${key}')">查询</button>
-        ${(f.keyword || f.status || f.from || f.to) ? `<button class="btn" onclick="resetDocFilter('${key}')">清空条件</button>` : ''}
+        ${Object.values(f).some(Boolean) ? `<button class="btn" onclick="resetDocFilter('${key}')">清空条件</button>` : ''}
         <div class="spacer"></div>
         ${can(conf.permNew) ? `<button class="btn primary" onclick="openDocForm('${key}')">＋ 新建${conf.title}</button>` : ''}
       </div>
       ${tableWrap([
-        { label: conf.title + '号' }, { label: '日期' }, { label: conf.partnerLabel }, { label: '制单人' },
+        { label: conf.title + '号' }, { label: '日期' }, { label: conf.partnerLabel }, { label: key === 'out' ? '销售人员' : '制单人' },
         { label: '合同号' }, { label: '金额', r: 1 },
-        ...(can('cost.view') ? [{ label: '成本', r: 1 }, { label: '毛利', r: 1 }] : []),
-        { label: '状态' }, { label: '结算' }, { label: '操作' }
-      ], rows, '还没有单据，点右上角新建')}`;
+        ...(can('cost.view') && key !== 'in' && key !== 'pret' ? [{ label: '成本', r: 1 }, { label: '毛利', r: 1 }] : []),
+        { label: '状态' },
+        ...(key !== 'in' && key !== 'pret' ? [{ label: '结算' }] : []),
+        { label: '操作' }
+      ], rows, '还没有单据，点右上角新建')}
+      ${pagerBar('docs-' + key, d.page, () => loadDocList(key), '张')}`;
   };
   p.afterRender = () => loadDocList(key);
   return p;
 }
 
 function resetDocFilter(key) {
-  DocState.filter[key] = { keyword: '', status: '', from: '', to: '' };
+  DocState.filter[key] = { keyword: '', status: '', from: '', to: '', supplier: '', contract: '', model: '', customer: '', product: '', brand: '', material_keyword: '', salesperson: '' };
+  pgState('docs-' + key).page = 1;
   loadDocList(key);
 }
 
 async function loadDocList(key) {
   const conf = DOC_CONF[key];
   const f = DocState.filter[key];
-  const qs = new URLSearchParams({ keyword: f.keyword || '', status: f.status || '', from: f.from || '', to: f.to || '' });
+  const qs = new URLSearchParams({
+    ...f,
+    page: pgState('docs-' + key).page, size: pgState('docs-' + key).size
+  });
   try {
     DocState.listData[key] = await api(`${conf.api}?${qs}`);
     if (App.route === key) {
@@ -148,26 +171,29 @@ function renderReturnBody() {
 
   const rows = RetDraft.items.map((it, i) => {
     const isMaster = it.material_type === 'master';
-    const dec = isMaster ? 3 : 0;
-    const step = isMaster ? 0.1 : 1;
+    const isPackSplit = isSplitPack(it);
+    const dec = isPackSplit ? (it.sub_unit === '米' ? 1 : 0) : isMaster ? 3 : 0;
+    const step = isPackSplit ? (it.sub_unit === '米' ? 0.1 : 1) : isMaster ? 0.1 : 1;
+    const unit = isPackSplit ? it.sub_unit : it.unit;
+    const retAmount = returnAmount(it, key, it.ret_qty);
     const done = it.returnable <= 0;
     return `<tr style="${done ? 'opacity:.45' : ''}">
       <td class="num" style="color:var(--faint)">${i + 1}</td>
-      <td><b>${esc(it.material_name)}</b><br><small class="hint">${esc(it.material_code)}${it.material_spec ? ' · ' + esc(it.material_spec) : ''}</small></td>
-      <td class="r num">${qty(it.qty)} ${esc(it.unit || '')}</td>
-      <td class="r num">${it.returned_qty > 0 ? qty(it.returned_qty) : '—'}</td>
-      <td class="r num"><b>${qty(it.returnable)}</b></td>
+      <td><b>${esc(it.material_name)}</b><br><small class="hint">${esc(it.material_code)}${materialModelSpec(it) ? ' · ' + materialModelSpec(it) : ''}</small>${materialMeasureHint(it) ? `<br><small class="hint">${esc(materialMeasureHint(it))}</small>` : ''}</td>
+      <td class="r num">${formatItemQuantity(it, key === 'sret' ? 'out' : 'in')}</td>
+      <td class="r num">${it.returned_qty > 0 ? `${qty(it.returned_qty)} ${esc(unit || '')}` : '—'}</td>
+      <td class="r num"><b>${qty(it.returnable)} ${esc(unit || '')}</b></td>
       <td style="width:100px">
         ${done ? '<span class="hint">已退完</span>'
           : `<input class="num" type="number" min="0" max="${it.returnable}" step="${step}" value="${it.ret_qty || ''}"
                oninput="onlyPositive(this,${dec});setRetQty(${i},this.value)" onblur="clampRetQty(${i},this)">`}
       </td>
-      <td class="r num">${money(it.price)}</td>
-      <td class="r num cell-ret-amt"><b>${money((it.ret_qty || 0) * it.price)}</b></td>
+      <td class="r num">${formatItemPrice(it, key === 'sret' ? 'out' : 'pret')}</td>
+      <td class="r num cell-ret-amt"><b>${money(retAmount)}</b></td>
     </tr>`;
   });
 
-  const total = RetDraft.items.reduce((s, it) => s + (Number(it.ret_qty) || 0) * it.price, 0);
+  const total = RetDraft.items.reduce((s, it) => s + returnAmount(it, key, it.ret_qty), 0);
 
   document.getElementById('ret-body').innerHTML = `
     <div class="banner" style="margin-bottom:12px">
@@ -196,12 +222,12 @@ function renderReturnBody() {
 
 function setRetQty(i, v) {
   RetDraft.items[i].ret_qty = Number(v) || 0;
-  const total = RetDraft.items.reduce((s, it) => s + (Number(it.ret_qty) || 0) * it.price, 0);
+  const total = RetDraft.items.reduce((s, it) => s + returnAmount(it, RetDraft.key, it.ret_qty), 0);
   const el = document.getElementById('ret-total');
   if (el) el.textContent = money(total);
   const row = document.querySelectorAll('#ret-body .items tbody tr')[i];
   const cell = row?.querySelector('.cell-ret-amt');
-  if (cell) cell.innerHTML = `<b>${money((Number(v) || 0) * RetDraft.items[i].price)}</b>`;
+  if (cell) cell.innerHTML = `<b>${money(returnAmount(RetDraft.items[i], RetDraft.key, v))}</b>`;
 }
 
 function clampRetQty(i, el) {
@@ -223,6 +249,8 @@ async function saveReturn(submit) {
     .filter(it => (Number(it.ret_qty) || 0) > 0)
     .map(it => ({
       material_id: it.material_id, qty: Number(it.ret_qty),
+      origin_item_id: it.id,
+      ...(RetDraft.key === 'pret' && isSplitPack(it) ? { price_basis: it.price_basis || 'pack' } : {}),
       price: it.price, cut_width: it.cut_width || 0, batch_no: it.batch_no || ''
     }));
   if (!items.length) return toast('至少填写一行退货数量', 'err');
@@ -248,8 +276,8 @@ async function openDocForm(key, docId) {
   const conf = DOC_CONF[key];
   try {
     const [mats, partners, whs] = await Promise.all([
-      api('/materials'),
-      api(conf.partnerApi),
+      api('/materials?all=1'),        // 物料下拉要全部，不能只拿一页
+      api(conf.partnerApi + '?all=1'),
       api('/warehouses')
     ]);
     Draft.materials = mats.list;
@@ -266,10 +294,27 @@ async function openDocForm(key, docId) {
       invoice_status: doc.invoice_status, carrier: doc.carrier || '',
       receiver: doc.receiver || '', receiver_phone: doc.receiver_phone || '',
       receiver_addr: doc.receiver_addr || '', remark: doc.remark || '',
-      items: doc.items.map(i => ({
-        material_id: i.material_id, qty: i.qty, price: i.price,
-        cut_width: i.cut_width || 0, remark: i.remark || ''
-      }))
+      items: doc.items.map(i => {
+        const m = Draft.materials.find(x => x.id === i.material_id) || {};
+        if (isSplitPack(m)) {
+          const parts = i.qty_whole != null || i.qty_sub != null
+            ? { whole: Number(i.qty_whole) || 0, loose: Number(i.qty_sub) || 0 }
+            : key === 'in'
+              ? { whole: Number(i.qty) || 0, loose: 0 }
+              : splitQtyParts(i.qty, m);
+          return {
+            material_id: i.material_id,
+            qty: itemQuantity({ qty_whole: parts.whole, qty_sub: parts.loose }, m),
+            qty_whole: parts.whole, qty_sub: parts.loose, price: i.price,
+            price_basis: key === 'in' ? (i.price_basis || 'pack') : '',
+            cut_width: i.cut_width || 0, remark: i.remark || ''
+          };
+        }
+        return {
+          material_id: i.material_id, qty: i.qty, price: i.price,
+          cut_width: i.cut_width || 0, remark: i.remark || ''
+        };
+      })
     } : {
       doc_date: todayStr(), partner_id: '', warehouse_id: Draft.warehouses[0]?.id || '',
       contract_sn: '', salesperson_id: App.user.id, invoice_status: 0,
@@ -277,6 +322,7 @@ async function openDocForm(key, docId) {
       items: []
     };
 
+    await refreshDocMaterialStock(Draft.data.warehouse_id);
     renderDocForm(key);
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -287,50 +333,70 @@ function renderDocForm(key) {
   const isOut = key === 'out' || key === 'sret';
   // 入库单的单价就是采购价，不显示成本与毛利
   const showCost = can('cost.view') && key !== 'in' && key !== 'pret';
-  // 只有本单包含可分切物料时才显示分切宽度列
+  // 只有本单包含胶带母卷（sub_unit='mm'）时才显示分切宽度列
   const showCutCol = (key === 'out') && d.items.some(it => {
     const m = Draft.materials.find(x => x.id === Number(it.material_id));
-    return m && m.type === 'master';
+    return m && m.type === 'master' && m.sub_unit === 'mm';
   });
 
   const itemRows = d.items.map((it, i) => {
     const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
     const isMaster = m.type === 'master';
-    const amount = (Number(it.qty) || 0) * (Number(it.price) || 0);
+    const isRollMaster = isMaster && m.sub_unit === 'mm';    // 胶带母卷
+    const isPackSplit = isSplitPack(m);
+    const amount = itemAmount(m, it, key);
     const costPrice = computeCostPrice(m, it, key);
-    const costAmount = costPrice * (Number(it.qty) || 0);
-    const needCut = isMaster && (key === 'out' || key === 'pret');
+    const costAmount = costPrice * itemQuantity(it, m);
+    const needCut = isRollMaster && (key === 'out' || key === 'pret');
     const avail = stockOf(m);
-    // 可分割物料数量允许小数，不可分割必须整数
-    const qtyStep = isMaster ? 0.1 : 1;
-    const qtyDec = isMaster ? 3 : 0;
+    // 胶带母卷可录分切卷数；整进零出通过零单位数量录入精度，其余整进整出必须整数。
+    const allowInboundFraction = key === 'in' && !isMaster;
+    const qtyStep = allowInboundFraction ? 0.001 : isMaster ? 0.1 : 1;
+    const qtyDec = allowInboundFraction || isMaster ? 3 : 0;
+    const wholeQtyStep = key === 'in' ? 0.001 : 1;
+    const wholeQtyDecimals = key === 'in' ? 3 : 0;
+    const smallStep = m.sub_unit === '米' ? 0.1 : 1;
+    const smallDecimals = m.sub_unit === '米' ? 1 : 0;
+    const modelAndSpec = materialModelSpec(m);
+    const measureHint = isPackSplit
+      ? `换算：1 ${m.unit} = ${qty(m.base_width)} ${m.sub_unit}`
+      : isRollMaster ? `母卷宽度：${qty(m.base_width)} mm` : '';
+    const priceLabel = itemPriceLabel(m, it, key);
     return `<tr data-row="${i}">
       <td style="width:250px">
         <button class="btn sm" style="width:100%;text-align:left" onclick="pickMaterial(${i},'${key}')">
-          ${m.id ? `<span class="cell-pick"><b>${esc(m.name)}</b><small>${esc(m.code)}${m.spec ? ' · ' + esc(m.spec) : ''} · ${esc(m.unit || '')}${isMaster ? ' · 可分切' : ''}</small></span>` : '<span class="hint">点击选择物料</span>'}
+          ${m.id ? `<span class="cell-pick"><b>${esc(m.name)}</b><small>${esc(m.code)}${modelAndSpec ? ' · ' + esc(modelAndSpec) : ''} · ${esc(m.unit || '')}</small>${measureHint ? `<small class="hint">${esc(measureHint)}</small>` : ''}</span>` : '<span class="hint">点击选择物料</span>'}
         </button>
-        ${m.id && isOut ? `<div class="hint" style="margin-top:3px">可用 ${esc(avail)}</div>` : ''}
+        ${m.id && isOut ? `<div class="hint" style="margin-top:3px">本仓现存 ${esc(avail)}</div>` : ''}
       </td>
       ${showCutCol ? (needCut
-        ? `<td style="width:92px"><input class="num" type="number" min="0" step="1" placeholder="宽度mm" value="${it.cut_width || ''}"
-            oninput="onlyPositive(this,0);setItem(${i},'cut_width',this.value,'${key}')" onblur="normalizeNum(this)" title="分切宽度，留空或 0 表示整支出库"></td>`
+        ? `<td style="width:100px"><div style="display:flex;align-items:center;gap:4px"><input class="num" type="number" min="0" step="1" placeholder="宽度" value="${it.cut_width || ''}"
+            oninput="onlyPositive(this,0);setItem(${i},'cut_width',this.value,'${key}')" onblur="normalizeNum(this)" title="分切宽度，留空或 0 表示整支出库"><span class="hint">mm</span></div></td>`
         : '<td style="width:92px" class="hint">—</td>') : ''}
-      <td style="width:92px"><input class="num" type="number" min="0" step="${qtyStep}" value="${it.qty || ''}"
-        oninput="onlyPositive(this,${qtyDec});setItem(${i},'qty',this.value,'${key}')" onblur="normalizeNum(this)"></td>
-      <td style="width:104px"><input class="num ${it._priceWarn ? 'warn' : ''}" type="number" min="0" step="0.01" value="${it.price ?? ''}"
-        oninput="onlyPositive(this,2);setItem(${i},'price',this.value,'${key}')" onblur="normalizeNum(this)"></td>
+      ${isPackSplit ? `<td style="min-width:210px"><div style="display:flex;gap:6px">
+        <label class="hint" style="flex:1">整数量<div style="display:flex;align-items:center;gap:3px"><input class="num" type="number" min="0" step="${wholeQtyStep}" value="${it.qty_whole ?? ''}"
+          oninput="onlyPositive(this,${wholeQtyDecimals});setItem(${i},'qty_whole',this.value,'${key}')" onblur="normalizeNum(this)"><span>${esc(m.unit)}</span></div></label>
+        <label class="hint" style="flex:1">拆分数量<div style="display:flex;align-items:center;gap:3px"><input class="num" type="number" min="0" step="${smallStep}" value="${it.qty_sub ?? ''}"
+          oninput="onlyPositive(this,${smallDecimals});setItem(${i},'qty_sub',this.value,'${key}')" onblur="normalizeNum(this)"><span>${esc(m.sub_unit)}</span></div></label>
+        </div><div class="hint cell-qty-total">合计 ${qty(itemQuantity(it, m))} ${esc(m.sub_unit)}</div></td>`
+        : `<td style="width:106px"><div style="display:flex;align-items:center;gap:4px"><input class="num" type="number" min="0" step="${qtyStep}" value="${it.qty || ''}"
+          oninput="onlyPositive(this,${qtyDec});setItem(${i},'qty',this.value,'${key}')" onblur="normalizeNum(this)"><span class="hint">${esc(m.unit || '')}</span></div></td>`}
+      <td style="width:138px"><input class="num ${it._priceWarn ? 'warn' : ''}" type="number" min="0" step="0.01" value="${it.price ?? ''}" title="${esc(priceLabel)}"
+        oninput="onlyPositive(this,2);setItem(${i},'price',this.value,'${key}')" onblur="normalizeNum(this)">
+        ${isPackSplit ? `<div class="hint cell-price-unit">${esc(priceLabel)}</div>` : ''}</td>
       <td class="r num cell-amount" style="width:110px">${money(amount)}</td>
-      ${showCost ? `<td class="r num cell-cost-price" style="width:104px;color:var(--muted)">${money(costPrice)}</td>
-      <td class="r num cell-cost-amount" style="width:104px;color:var(--muted)">${money(costAmount)}</td>` : ''}
+      ${showCost ? `<td class="r num cell-cost-price" style="width:104px;color:var(--muted)">${formatCostWithUnit(costPrice, m)}</td>
+      <td class="r num cell-cost-amount" style="width:104px;color:var(--muted)">${formatCost(costAmount)}</td>` : ''}
       <td style="width:40px"><button class="btn sm danger" onclick="removeItem(${i},'${key}')">×</button></td>
     </tr>`;
   }).join('');
 
   const totals = d.items.reduce((a, it) => {
     const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
-    const amt = (Number(it.qty) || 0) * (Number(it.price) || 0);
+    const quantity = itemQuantity(it, m);
+    const amt = itemAmount(m, it, key);
     const cp = computeCostPrice(m, it, key);
-    a.amount += amt; a.cost += cp * (Number(it.qty) || 0);
+    a.amount += amt; a.cost += cp * quantity;
     return a;
   }, { amount: 0, cost: 0 });
   const profit = totals.amount - totals.cost;
@@ -345,7 +411,7 @@ function renderDocForm(key) {
           ${Draft.partners.map(p => `<option value="${p.id}" ${Number(d.partner_id) === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
         </select></div>
       <div class="field"><label>仓库 *</label>
-        <select class="inp" onchange="Draft.data.warehouse_id=Number(this.value)">
+        <select class="inp" onchange="changeDocWarehouse(this.value,'${key}')">
           ${Draft.warehouses.map(w => `<option value="${w.id}" ${Number(d.warehouse_id) === w.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}
         </select></div>
       <div class="field"><label>合同号</label>
@@ -371,8 +437,8 @@ function renderDocForm(key) {
       <thead><tr>
         <th>物料</th>
         ${showCutCol ? '<th class="r">分切宽度</th>' : ''}
-        <th class="r">数量</th>
-        <th class="r">${key === 'in' || key === 'pret' ? '进货单价' : '销售单价'}</th>
+        <th class="r">数量（单位显示在数量后）</th>
+        <th class="r">单价</th>
         <th class="r">金额</th>
         ${showCost ? '<th class="r">成本单价</th><th class="r">成本金额</th>' : ''}
         <th></th>
@@ -412,8 +478,142 @@ function renderDocForm(key) {
 /** 物料可用库存的可读文本 */
 function stockOf(m) {
   if (!m || !m.id) return '—';
-  if (m.type === 'master') return `${m.roll_count || 0} 支 / ${qty(m.open_width || 0)}mm`;
+  // 胶带母卷（按 mm 分切）
+  if (m.type === 'master' && m.sub_unit === 'mm') {
+    return `${m.roll_count || 0} 支 / ${qty(m.open_width || 0)}mm`;
+  }
+  // 箱装母卷（按卷零售）
+  if (m.type === 'master' && m.sub_unit && m.sub_unit !== 'mm') {
+    let text = `${qty(m.stock_qty || 0)} ${m.unit}`;
+    if (m.sub_qty > 0) text += ` + ${m.sub_qty} ${m.sub_unit}`;
+    return text;
+  }
+  // 普通物料
   return `${qty(m.stock_qty || 0)} ${m.unit || ''}`;
+}
+
+async function refreshDocMaterialStock(warehouseId) {
+  if (!warehouseId) return;
+  const res = await api(`/materials?all=1&warehouse_id=${encodeURIComponent(warehouseId)}`);
+  if (Number(Draft.data?.warehouse_id) === Number(warehouseId)) Draft.materials = res.list;
+}
+
+async function changeDocWarehouse(warehouseId, key) {
+  Draft.data.warehouse_id = Number(warehouseId);
+  try {
+    await refreshDocMaterialStock(Draft.data.warehouse_id);
+    renderDocForm(key);
+  } catch (e) { toast(`读取所选仓库库存失败：${e.message}`, 'err'); }
+}
+
+function isSplitPack(m) {
+  const type = m?.type || m?.material_type;
+  return !!(m && type === 'master' && m.sub_unit && m.sub_unit !== 'mm');
+}
+
+function formatCost(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? money(n) : '—';
+}
+
+function formatCostWithUnit(value, m) {
+  const formatted = formatCost(value);
+  const unit = isSplitPack({ type: m?.type || m?.material_type, sub_unit: m?.sub_unit }) ? m.sub_unit : m?.unit;
+  return formatted === '—' || !unit ? formatted : `${formatted} / ${esc(unit)}`;
+}
+
+function materialMeasureHint(m) {
+  const type = m?.material_type || m?.type;
+  if (type !== 'master') return '';
+  if (m.sub_unit === 'mm') return `母卷宽度：${qty(m.base_width)} mm`;
+  return m.sub_unit ? `换算：1 ${m.unit} = ${qty(m.base_width)} ${m.sub_unit}` : '';
+}
+
+function materialModelSpec(m) {
+  if (!m) return '';
+  const edited = m.model_edited ?? m.material_model_edited ?? 1;
+  const model = edited ? (m.model || m.material_model || '') : (m.spec || m.material_spec || '');
+  const spec = edited ? (m.spec || m.material_spec || '') : '';
+  return [model, spec].filter(Boolean).map(esc).join(' · ');
+}
+
+/** 单据统一按零单位计算整进零出数量。 */
+function itemQuantity(it, m) {
+  if (isSplitPack(m) && (it.qty_whole !== undefined || it.qty_sub !== undefined)) {
+    return (Number(it.qty_whole) || 0) * (Number(m.base_width) || 1) + (Number(it.qty_sub) || 0);
+  }
+  return Number(it.qty) || 0;
+}
+
+function itemAmount(m, it, key) {
+  const quantity = itemQuantity(it, m);
+  if (isSplitPack(m) && (key === 'in' || key === 'pret')) {
+    if ((key === 'in' && (it.price_basis ? it.price_basis === 'sub' : Number(it.qty_sub) > 0))
+        || (key === 'pret' && it.price_basis === 'sub')) {
+      return quantity * (Number(it.price) || 0);
+    }
+    return (quantity / (Number(m.base_width) || 1)) * (Number(it.price) || 0);
+  }
+  return quantity * (Number(it.price) || 0);
+}
+
+function itemPriceLabel(m, it, key) {
+  if (!isSplitPack(m)) return key === 'in' || key === 'pret' ? '进货单价' : '销售单价';
+  if (key === 'in') {
+    const perSubUnit = it.price_basis ? it.price_basis === 'sub' : Number(it.qty_sub) > 0;
+    return perSubUnit ? `采购单价/${m.sub_unit}` : `采购单价/${m.unit}`;
+  }
+  if (key === 'pret') return `采购单价/${it.price_basis === 'sub' ? m.sub_unit : m.unit}`;
+  return `销售单价/${m.sub_unit}`;
+}
+
+function splitQtyParts(total, m) {
+  const perPack = Number(m.base_width) || 1;
+  const whole = Math.floor((Number(total || 0) + 1e-8) / perPack);
+  const scale = m.sub_unit === '米' ? 10 : 1000;
+  const loose = Math.round(((Number(total || 0) - whole * perPack) + 1e-8) * scale) / scale;
+  return { whole, loose };
+}
+
+function formatItemQuantity(it, key) {
+  const m = {
+    type: it.material_type,
+    sub_unit: it.sub_unit,
+    base_width: it.base_width,
+    unit: it.unit
+  };
+  if (!isSplitPack(m)) return `${qty(it.qty)} ${esc(it.unit || '')}`;
+  let parts;
+  if (it.qty_whole != null || it.qty_sub != null) {
+    parts = { whole: Number(it.qty_whole) || 0, loose: Number(it.qty_sub) || 0 };
+  } else if (key === 'in') {
+    // 升级前入库单 qty 记录整单位数量。
+    return `${qty(it.qty)} ${esc(it.unit)}`;
+  } else {
+    parts = splitQtyParts(it.qty, m);
+  }
+  return `${qty(parts.whole)} ${esc(it.unit)} + ${qty(parts.loose)} ${esc(it.sub_unit)}`;
+}
+
+function formatItemPrice(it, key) {
+  const isPurchase = key === 'in' || key === 'pret';
+  const isPackSplit = isSplitPack({ type: it.material_type, sub_unit: it.sub_unit });
+  const unit = isPackSplit
+    ? ((key === 'in' || key === 'pret') && it.price_basis === 'sub'
+      ? it.sub_unit
+      : isPurchase ? it.unit : it.sub_unit)
+    : it.unit;
+  return `${money(it.price)} / ${esc(unit || '')}`;
+}
+
+function returnAmount(it, key, quantity) {
+  const q = Number(quantity) || 0;
+  if (key === 'pret' && isSplitPack(it)) {
+    return it.price_basis === 'sub'
+      ? q * (Number(it.price) || 0)
+      : q / (Number(it.base_width) || 1) * (Number(it.price) || 0);
+  }
+  return q * (Number(it.price) || 0);
 }
 
 function computeCostPrice(m, it, key) {
@@ -422,6 +622,7 @@ function computeCostPrice(m, it, key) {
     const share = Number(it.cut_width) / (m.base_width || 1200);
     return (Number(m.cost) || 0) * share + (Number(m.cut_fee) || 0);
   }
+  if (isSplitPack(m)) return Number(m.cost) || 0;
   return Number(m.cost) || 0;
 }
 
@@ -432,20 +633,32 @@ function setItem(i, field, val, key) {
 
   // 只更新当前行的金额和成本,不重建整个表单(避免焦点跳转)
   const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
-  const amount = (Number(it.qty) || 0) * (Number(it.price) || 0);
+  if (key === 'in' && isSplitPack(m) && (field === 'qty_whole' || field === 'qty_sub')) {
+    it.price_basis = Number(it.qty_sub) > 0 ? 'sub' : 'pack';
+  }
+  const quantity = itemQuantity(it, m);
+  if (isSplitPack(m)) it.qty = quantity;
+  const amount = itemAmount(m, it, key);
   const costPrice = computeCostPrice(m, it, key);
-  const costAmount = costPrice * (Number(it.qty) || 0);
+  const costAmount = costPrice * quantity;
   const showCost = can('cost.view');
 
   // 用 data-row 属性精确定位当前行,避免 nth-child 在行数变化时出错
   const row = document.querySelector(`.items tbody tr[data-row="${i}"]`);
   if (row) {
     const amountCell = row.querySelector('.cell-amount');
+    const qtyTotalCell = row.querySelector('.cell-qty-total');
     const costPriceCell = row.querySelector('.cell-cost-price');
     const costAmountCell = row.querySelector('.cell-cost-amount');
+    const priceInput = row.querySelector('input[title]');
+    const priceUnitHint = row.querySelector('.cell-price-unit');
+    const priceLabel = itemPriceLabel(m, it, key);
     if (amountCell) amountCell.textContent = money(amount);
-    if (showCost && costPriceCell) costPriceCell.textContent = money(costPrice);
-    if (showCost && costAmountCell) costAmountCell.textContent = money(costAmount);
+    if (qtyTotalCell) qtyTotalCell.textContent = `合计 ${qty(quantity)} ${m.sub_unit}`;
+    if (priceInput) priceInput.title = priceLabel;
+    if (priceUnitHint) priceUnitHint.textContent = priceLabel;
+    if (showCost && costPriceCell) costPriceCell.textContent = formatCostWithUnit(costPrice, m);
+    if (showCost && costAmountCell) costAmountCell.textContent = formatCost(costAmount);
   }
 
   // 更新底部合计
@@ -455,13 +668,14 @@ function setItem(i, field, val, key) {
 function updateTotals(key) {
   const totals = Draft.data.items.reduce((a, it) => {
     const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
-    const amt = (Number(it.qty) || 0) * (Number(it.price) || 0);
+    const quantity = itemQuantity(it, m);
+    const amt = itemAmount(m, it, key);
     const cp = computeCostPrice(m, it, key);
-    a.amount += amt; a.cost += cp * (Number(it.qty) || 0);
+    a.amount += amt; a.cost += cp * quantity;
     return a;
   }, { amount: 0, cost: 0 });
   const profit = totals.amount - totals.cost;
-  const showCost = can('cost.view');
+  const showCost = can('cost.view') && key !== 'in' && key !== 'pret';
 
   const sumArea = document.querySelector('.totals-area');
   if (!sumArea) return;
@@ -483,8 +697,11 @@ function updateTotals(key) {
 
 
 function addItem(key) {
+  const newIndex = Draft.data.items.length;
   Draft.data.items.push({ material_id: '', qty: 1, price: 0, cut_width: 0, remark: '' });
   renderDocForm(key);
+  // 直接弹出物料选择器
+  setTimeout(() => pickMaterial(newIndex, key), 50);
 }
 
 function removeItem(i, key) {
@@ -501,28 +718,39 @@ function pickMaterial(index, key, forCheck) {
       <input class="inp" id="pk-kw" placeholder="输入名称、编号、规格、品牌或扫描条码" style="margin-bottom:12px"
         oninput="filterMaterialPicker('${key}',${index})">
       <div class="tw" style="max-height:50vh">
-        <table><thead><tr><th>编号</th><th>名称</th><th>规格</th><th>类型</th><th class="r">库存</th><th class="r">参考价</th><th></th></tr></thead>
+        <table><thead><tr><th>编号</th><th>名称</th><th>规格</th><th>类型</th><th class="r">所选仓库存</th><th class="r">参考价</th><th></th></tr></thead>
         <tbody id="pk-body">${materialRows(list, '', key, index)}</tbody></table>
       </div>`,
     size: 'lg',
-    footer: `<button class="btn" onclick="closeDialog()">关闭</button>`
+    footer: `<button class="btn" onclick="closeMaterialPicker('${key}')">关闭</button>`,
+    onMount: root => {
+      const closeButton = root.querySelector('.dlg-head .x');
+      if (closeButton) closeButton.onclick = () => closeMaterialPicker(key);
+    }
   });
   setTimeout(() => document.getElementById('pk-kw')?.focus(), 50);
 }
 
+function closeMaterialPicker(key) {
+  renderDocForm(key);
+}
+
 function materialRows(list, kw, key, index) {
   const k = kw.toLowerCase();
-  const filtered = list.filter(m => !k || [m.name, m.code, m.spec, m.brand, m.barcode].join(' ').toLowerCase().includes(k));
+  const filtered = list.filter(m => !k || [m.name, m.code, m.model, m.spec, m.brand, m.barcode].join(' ').toLowerCase().includes(k));
   if (!filtered.length) return `<tr><td colspan="7" class="empty">没有匹配的物料</td></tr>`;
   return filtered.map(m => {
-    const stock = m.type === 'master' ? `${m.roll_count || 0} 支 / ${qty(m.open_width)}mm` : qty(m.stock_qty);
+    // 三种口径分开：胶带母卷看支数/宽度，箱装小卷看箱+散卷，普通物料看数量
+    const stock = stockOf(m);
+    const modelAndSpec = materialModelSpec(m);
+    const measureHint = materialMeasureHint(m);
     const refPrice = m.cost ? (Number(m.cost) * 1.3).toFixed(2) : '';
     return `<tr onclick="applyMaterial(${index},${m.id},'${key}')" style="cursor:pointer">
       <td class="mono">${esc(m.code)}</td>
       <td>${esc(m.name)}</td>
-      <td>${esc(m.spec || '')}</td>
+      <td>${modelAndSpec}${measureHint ? `<br><small class="hint">${esc(measureHint)}</small>` : ''}</td>
       <td>${esc(m.typeName || '')}</td>
-      <td class="r num">${stock}</td>
+      <td class="r num">${esc(stock)}</td>
       <td class="r num" style="color:var(--faint)">${refPrice}</td>
       <td><button class="btn sm primary">选择</button></td>
     </tr>`;
@@ -537,8 +765,24 @@ function filterMaterialPicker(key, index) {
 function applyMaterial(index, materialId, key) {
   const m = Draft.materials.find(x => x.id === materialId);
   const it = Draft.data.items[index];
+  const changedMaterial = Number(it.material_id) !== Number(materialId);
+  if (changedMaterial) {
+    delete it.qty_whole;
+    delete it.qty_sub;
+    delete it.price_basis;
+    it.qty = 1;
+  }
   it.material_id = materialId;
-  it.price = it.price || (m.type === 'master' ? Math.round((m.cost || 0) * 1.25) : Math.round((m.cost || 0) * 1.4 * 100) / 100);
+  if (isSplitPack(m) && it.qty_whole === undefined && it.qty_sub === undefined) {
+    // 默认不预填整箱/整卷；只输入拆分数量时应只按零散货计数。
+    it.qty_whole = '';
+    it.qty_sub = '';
+    it.qty = 0;
+  }
+  const cost = Number(m.cost) || 0;
+  it.price = it.price || (key === 'in' ? 0
+    : m.type === 'master' ? Math.round(cost * 1.25 * 100) / 100
+      : Math.round(cost * 1.4 * 100) / 100);
   closeDialog();
   renderDocForm(key);
 }
@@ -556,16 +800,28 @@ async function saveDoc(key, submit) {
     const no = i + 1;
     if (!it.material_id) return toast(`第 ${no} 行还没选物料`, 'err');
     const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
-    const q = Number(it.qty) || 0;
+    const q = itemQuantity(it, m);
     if (q <= 0) return toast(`第 ${no} 行「${m.name || ''}」数量必须大于 0`, 'err');
-    if (m.type !== 'master' && !Number.isInteger(q)) {
-      return toast(`「${m.name}」不可分割，数量必须是整数`, 'err');
+    if (isSplitPack(m)) {
+      const whole = Number(it.qty_whole) || 0;
+      const loose = Number(it.qty_sub) || 0;
+      const step = m.sub_unit === '米' ? 0.1 : 1;
+      if (whole < 0 || (key !== 'in' && !Number.isInteger(whole))) return toast(`「${m.name}」整单位数量必须是整数`, 'err');
+      if (loose < 0 || Math.abs(loose / step - Math.round(loose / step)) > 1e-6) {
+        return toast(`「${m.name}」${m.sub_unit}数量最小按 ${step} 递增`, 'err');
+      }
+    } else if (key !== 'in' && m.type !== 'master' && !Number.isInteger(q)) {
+      return toast(`「${m.name}」为整进整出物料，数量必须是整数`, 'err');
+    }
+    if (m.type === 'master' && m.sub_unit === 'mm' && !Number.isInteger(q)) {
+      return toast(`「${m.name}」整支数或分切卷数必须是整数`, 'err');
     }
     if (!(Number(it.price) > 0)) return toast(`第 ${no} 行「${m.name || ''}」单价必须填写`, 'err');
 
     // 出库和采购退货要扣库存，提交前先核对
     if (key === 'out' || key === 'pret') {
-      if (m.type === 'master') {
+      // 胶带母卷（按 mm 分切）：比宽度或整支数
+      if (m.type === 'master' && m.sub_unit === 'mm') {
         const cw = Number(it.cut_width) || 0;
         if (cw > 0) {
           if (m.base_width && cw > m.base_width) {
@@ -578,7 +834,17 @@ async function saveDoc(key, submit) {
         } else if (q > (Number(m.roll_count) || 0)) {
           return toast(`「${m.name}」只有 ${m.roll_count || 0} 支整卷，不够出 ${q} 支`, 'err');
         }
-      } else if (q > (Number(m.stock_qty) || 0)) {
+      }
+      // 箱装小卷：数量按最小单位（卷）算，可用 = 箱数 × 每箱卷数 + 散卷
+      else if (m.type === 'master' && m.sub_unit) {
+        const perBox = Number(m.base_width) || 1;
+        const availTotal = (Number(m.stock_qty) || 0) * perBox + (Number(m.sub_qty) || 0);
+        if (q > availTotal) {
+          return toast(`「${m.name}」可用 ${qty(m.stock_qty || 0)} ${m.unit || ''}`
+            + ` + ${m.sub_qty || 0} ${m.sub_unit}（共 ${qty(availTotal)} ${m.sub_unit}），不够出 ${qty(q)} ${m.sub_unit}`, 'err');
+        }
+      }
+      else if (q > (Number(m.stock_qty) || 0)) {
         return toast(`「${m.name}」库存只有 ${qty(m.stock_qty || 0)} ${m.unit || ''}，不够出 ${qty(q)}`, 'err');
       }
     }
@@ -592,10 +858,18 @@ async function saveDoc(key, submit) {
     invoice_status: d.invoice_status, carrier: d.carrier, receiver: d.receiver,
     receiver_phone: d.receiver_phone, receiver_addr: d.receiver_addr, remark: d.remark,
     submit,
-    items: d.items.map(i => ({
-      material_id: i.material_id, qty: i.qty, price: i.price,
-      cut_width: i.cut_width || 0, remark: i.remark || ''
-    }))
+    items: d.items.map(i => {
+      const m = Draft.materials.find(x => x.id === Number(i.material_id)) || {};
+      return {
+        material_id: i.material_id, qty: itemQuantity(i, m), price: i.price,
+        ...(isSplitPack(m) ? {
+          qty_whole: Number(i.qty_whole) || 0,
+          qty_sub: Number(i.qty_sub) || 0,
+          ...(key === 'in' ? { price_basis: i.price_basis || (Number(i.qty_sub) > 0 ? 'sub' : 'pack') } : {})
+        } : {}),
+        cut_width: i.cut_width || 0, remark: i.remark || ''
+      };
+    })
   };
   try {
     if (Draft.editing) {
@@ -614,17 +888,18 @@ async function openDocDetail(key, id) {
   const conf = DOC_CONF[key];
   try {
     const d = await api(`${conf.api}/${id}`);
-    const showCost = can('cost.view');
+    // 入库单和采购退货单不显示成本与毛利
+    const showCost = can('cost.view') && key !== 'in' && key !== 'pret';
     const items = d.items.map(it => `<tr>
       <td>${esc(it.material_name)}</td>
       <td class="mono">${esc(it.material_code)}</td>
-      <td>${esc(it.material_spec || '')}</td>
+      <td>${materialModelSpec(it)}</td>
       ${key === 'out' && it.material_type === 'master' ? `<td class="num">${it.cut_width ? it.cut_width + 'mm' : '整支'}</td>` : ''}
-      <td class="num">${qty(it.qty)} ${esc(it.unit || '')}</td>
-      <td class="r num">${money(it.price)}</td>
+      <td class="num">${formatItemQuantity(it, key)}</td>
+      <td class="r num">${formatItemPrice(it, key)}</td>
       <td class="r num"><b>${money(it.amount)}</b></td>
-      ${showCost ? `<td class="r num" style="color:var(--muted)">${money(it.cost_price)}</td>
-      <td class="r num" style="color:var(--muted)">${money(it.cost_amount)}</td>` : ''}
+      ${showCost ? `<td class="r num" style="color:var(--muted)">${formatCostWithUnit(it.cost_price, it)}</td>
+      <td class="r num" style="color:var(--muted)">${formatCost(it.cost_amount)}</td>` : ''}
     </tr>`).join('');
 
     const totalAmount = d.total_amount || 0;
@@ -632,6 +907,12 @@ async function openDocDetail(key, id) {
     const profit = totalAmount - totalCost;
 
     const actions = [];
+    // 导出按钮：所有单据都能导出 Excel
+    actions.push(`<button class="btn" onclick="exportDoc('${key}',${d.id},'doc')">导出 Excel</button>`);
+    if (key === 'out' || key === 'sret') {
+      actions.push(`<button class="btn" onclick="exportDoc('${key}',${d.id},'delivery')">导出送货单</button>`);
+    }
+
     if (d.status === 'draft' || d.status === 'rejected') {
       if (can(conf.permEdit)) actions.push(`<button class="btn" onclick="closeDialog();openDocForm('${key}',${d.id})">编辑</button>`);
       actions.push(`<button class="btn primary" onclick="submitDoc(${d.id},'${key}')">提交审批</button>`);
@@ -652,8 +933,9 @@ async function openDocDetail(key, id) {
       size: 'lg',
       body: `
         <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">
-          ${statusTag(d.status)} ${payTag(d.pay_status)}
-          ${d.invoice_status ? '<span class="tag info">已开票</span>' : '<span class="tag mute">未开票</span>'}
+          ${statusTag(d.status)}
+          ${key !== 'in' && key !== 'pret' ? payTag(d.pay_status) : ''}
+          ${key === 'out' && d.invoice_status ? '<span class="tag info">已开票</span>' : key === 'out' ? '<span class="tag mute">未开票</span>' : ''}
         </div>
         <div class="form-grid" style="margin-bottom:18px">
           <div><div class="hint">${conf.partnerLabel}</div><div>${esc(d.partner?.name || '—')}</div></div>
@@ -671,7 +953,7 @@ async function openDocDetail(key, id) {
 
         <div class="sec">明细</div>
         <table class="items">
-          <thead><tr><th>物料</th><th>编号</th><th>规格</th>
+          <thead><tr><th>物料</th><th>编号</th><th>型号 / 规格</th>
             ${key === 'out' ? '<th>分切</th>' : ''}
             <th class="r">数量</th><th class="r">单价</th><th class="r">金额</th>
             ${showCost ? '<th class="r">成本单价</th><th class="r">成本金额</th>' : ''}
@@ -686,7 +968,7 @@ async function openDocDetail(key, id) {
           <div><div class="hint">金额合计</div><b class="num" style="font-size:17px">${money(totalAmount)}</b></div>
         </div>
         ${d.remark ? `<div class="hint" style="margin-top:12px">备注：${esc(d.remark)}</div>` : ''}
-        ${d.status === 'approved' ? `<div class="hint" style="margin-top:12px">已收付款 ${money(d.paid_amount)}，未结 ${money(totalAmount - (d.paid_amount || 0))}</div>` : ''}
+        ${d.status === 'approved' && (key === 'out' || key === 'sret') ? `<div class="hint" style="margin-top:12px">已收付款 ${money(d.paid_amount)}，未结 ${money(totalAmount - (d.paid_amount || 0))}</div>` : ''}
       `,
       footer: `${actions.join('')}<button class="btn" onclick="closeDialog()">关闭</button>`
     });
@@ -724,8 +1006,8 @@ async function openAudit(key, id, sn) {
     const doc = await api(`${conf.api}/${id}`);
     const rows = (doc.items || []).map((it, i) => `<tr>
       <td class="num" style="color:var(--faint)">${i + 1}</td>
-      <td><b>${esc(it.material_name || '')}</b><br><small class="hint">${esc(it.material_code || '')}${it.material_spec ? ' · ' + esc(it.material_spec) : ''}</small></td>
-      <td class="r num">${qty(it.qty)} ${esc(it.unit || '')}</td>
+      <td><b>${esc(it.material_name || '')}</b><br><small class="hint">${esc(it.material_code || '')}${materialModelSpec(it) ? ' · ' + materialModelSpec(it) : ''}</small>${materialMeasureHint(it) ? `<br><small class="hint">${esc(materialMeasureHint(it))}</small>` : ''}</td>
+      <td class="r num">${formatItemQuantity(it, key)}</td>
       ${it.cut_width ? `<td class="r num">${qty(it.cut_width)}mm</td>` : '<td class="hint">—</td>'}
       <td class="r num">${money(it.price)}</td>
       <td class="r num"><b>${money(it.amount)}</b></td>
@@ -833,6 +1115,41 @@ async function submitPayment(docId, key) {
     toast('已登记', 'ok');
     loadDocList(key);
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---------------- 导出单据 ---------------- */
+/**
+ * @param {string} key - out / in / sret / pret
+ * @param {number} id - 单据 ID
+ * @param {string} kind - 'doc'（正式单据）或 'delivery'（送货单，无金额）
+ */
+async function exportDoc(key, id, kind) {
+  try {
+    const url = `/api/export/docs/${key}/${id}?kind=${kind}`;
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + App.token } });
+    if (!res.ok) throw new Error('导出失败');
+
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    let filename = `单据_${id}.xlsx`;
+    const match = disposition.match(/filename[^;=\n]*=["']?([^"';\n]*)["']?/);
+    if (match && match[1]) filename = decodeURIComponent(match[1]);
+
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objUrl);
+    }, 100);
+    toast(kind === 'delivery' ? '送货单已导出' : 'Excel 已导出', 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  }
 }
 
 /* 注册页面 */

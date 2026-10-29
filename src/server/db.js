@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS materials (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
+  model TEXT DEFAULT '',
+  model_edited INTEGER NOT NULL DEFAULT 0,
   brand TEXT,
   spec TEXT,
   unit TEXT NOT NULL,
@@ -344,6 +346,58 @@ function seed() {
 }
 
 const seeded = seed();
+
+/* ---------------- 结构迁移（可重复执行） ---------------- */
+/** 给已有表补列：列不存在才加，反复跑没副作用 */
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+function migrate() {
+  // 物料型号与规格分开保存；旧数据仍可由前端兼容显示为型号。
+  ensureColumn('materials', 'model', "TEXT DEFAULT ''");
+  // 仅标记用户是否已维护独立型号字段，不批量改写旧物料内容。
+  ensureColumn('materials', 'model_edited', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('materials', 'created_by', 'INTEGER');
+
+  // 可分割/可零售物料：采购单位之下的最小单位名称（mm / 卷 / 米 …）
+  // base_width 复用为「1 个采购单位 = 多少个最小单位」：
+  //   胶带母卷   unit=支, sub_unit=mm, base_width=1200
+  //   整箱电工胶带 unit=箱, sub_unit=卷, base_width=300
+  //   接地线     unit=卷, sub_unit=米, base_width=50
+  ensureColumn('materials', 'sub_unit', "TEXT DEFAULT ''");
+
+  // 库存表增加散装数量字段，用于「整箱拆零」场景（如 50箱 + 250卷）
+  // 对 sub_unit='卷' 的物料，sub_qty 记录散卷数；
+  // 对 sub_unit='mm' 的胶带母卷，继续用 remaining_width，sub_qty 恒为 0
+  ensureColumn('inventory', 'sub_qty', 'REAL DEFAULT 0');
+
+  // 保存单据录入时的整单位/零单位数量，兼容旧单据的原数量口径。
+  ensureColumn('doc_items', 'qty_whole', 'REAL');
+  ensureColumn('doc_items', 'qty_sub', 'REAL');
+  // 保存入库价按整单位还是最小单位录入，空值旧单据按原整单位口径解释。
+  ensureColumn('doc_items', 'price_basis', "TEXT DEFAULT ''");
+  // 退货明细精确关联原单行，避免同物料多批次时误用其他行价格。
+  ensureColumn('doc_items', 'origin_item_id', 'INTEGER');
+
+  // 供应商档案：对齐老系统的供应商导入模板（地区、手机、邮箱、账期、资信额度、级别）
+  ensureColumn('suppliers', 'region', "TEXT DEFAULT ''");
+  ensureColumn('suppliers', 'mobile', "TEXT DEFAULT ''");
+  ensureColumn('suppliers', 'email', "TEXT DEFAULT ''");
+  ensureColumn('suppliers', 'credit_days', 'REAL DEFAULT 0');
+  ensureColumn('suppliers', 'credit_amount', 'REAL DEFAULT 0');
+  ensureColumn('suppliers', 'level', "TEXT DEFAULT ''");
+
+  // 员工工号用于业务单据识别，旧员工由管理员编辑补录。
+  ensureColumn('users', 'employee_no', 'TEXT');
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_no
+           ON users(employee_no COLLATE NOCASE)
+           WHERE employee_no IS NOT NULL AND trim(employee_no) <> ''`);
+}
+migrate();
 
 module.exports = {
   db, now, today, hashPassword, verifyPassword,

@@ -9,9 +9,9 @@ const ROLE_NAMES = { sales: '销售员', purchaser: '采购员', finance: '财�
 route('GET', '/api/users', async (ctx) => {
   ctx.need('user.manage');
   const { keyword = '', role = '', status = '' } = ctx.query;
-  let sql = 'SELECT id,username,name,role,phone,status,created_at,last_login_at FROM users WHERE 1=1';
+  let sql = 'SELECT id,username,name,employee_no,role,phone,status,created_at,last_login_at FROM users WHERE 1=1';
   const args = [];
-  if (keyword) { sql += ' AND (username LIKE ? OR name LIKE ? OR phone LIKE ?)'; args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
+  if (keyword) { sql += ' AND (username LIKE ? OR name LIKE ? OR employee_no LIKE ? OR phone LIKE ?)'; args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
   if (role) { sql += ' AND role=?'; args.push(role); }
   if (status !== '') { sql += ' AND status=?'; args.push(Number(status)); }
   sql += ' ORDER BY id';
@@ -23,15 +23,17 @@ route('GET', '/api/users', async (ctx) => {
 route('POST', '/api/users', async (ctx) => {
   ctx.need('user.manage');
   const { username, name, password, role, phone } = ctx.body;
-  if (!username || !name || !password || !role) bad('账号、姓名、密码、角色都必须填写');
+  const employeeNo = String(ctx.body.employee_no || '').trim();
+  if (!username || !name || !password || !role || !employeeNo) bad('账号、姓名、工号、密码、角色都必须填写');
   if (String(password).length < 6) bad('初始密码至少 6 位');
   if (!ROLES.includes(role)) bad('角色不合法');
   const exist = db.prepare('SELECT id FROM users WHERE username=?').get(String(username).trim());
   if (exist) bad('该账号已存在');
+  if (db.prepare('SELECT id FROM users WHERE employee_no=? COLLATE NOCASE').get(employeeNo)) bad('该工号已被使用');
 
-  const r = db.prepare(`INSERT INTO users(username,password_hash,name,role,phone,status,created_at)
-                        VALUES (?,?,?,?,?,1,?)`)
-    .run(String(username).trim(), hashPassword(password), name, role, phone || '', now());
+  const r = db.prepare(`INSERT INTO users(username,password_hash,name,employee_no,role,phone,status,created_at)
+                        VALUES (?,?,?,?,?,?,1,?)`)
+    .run(String(username).trim(), hashPassword(password), name, employeeNo, role, phone || '', now());
   logAction(ctx, 'create', 'user', `新增员工 ${name}(${username}) 角色=${ROLE_NAMES[role]}`);
   return { id: Number(r.lastInsertRowid) };
 });
@@ -43,14 +45,18 @@ route('PUT', '/api/users/:id', async (ctx) => {
   const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
   if (!u) notFound('员工不存在');
   const { name, role, phone } = ctx.body;
+  const employeeNo = ctx.body.employee_no === undefined ? u.employee_no : String(ctx.body.employee_no || '').trim();
+  if (!employeeNo) bad('员工工号必填');
+  const duplicate = db.prepare('SELECT id FROM users WHERE employee_no=? COLLATE NOCASE AND id<>?').get(employeeNo, id);
+  if (duplicate) bad('该工号已被其他员工使用');
   if (role && !ROLES.includes(role)) bad('角色不合法');
   // 不允许把最后一个超级管理员改成别的角色
   if (u.role === 'admin' && role && role !== 'admin') {
     const admins = db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin' AND status=1").get().n;
     if (admins <= 1) bad('系统至少需要保留一个超级管理员');
   }
-  db.prepare('UPDATE users SET name=?, role=?, phone=? WHERE id=?')
-    .run(name ?? u.name, role ?? u.role, phone ?? u.phone, id);
+  db.prepare('UPDATE users SET name=?, employee_no=?, role=?, phone=? WHERE id=?')
+    .run(name ?? u.name, employeeNo, role ?? u.role, phone ?? u.phone, id);
   logAction(ctx, 'update', 'user', `编辑员工 ${u.username}`);
   return {};
 });

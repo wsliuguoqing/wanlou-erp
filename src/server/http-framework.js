@@ -183,7 +183,38 @@ function staticHandler(req, res, pathname) {
   });
 }
 
+/* ---------------- 分页 ---------------- */
+/** 从 query 解析页码与每页条数。size 允许 1~500，默认 50 */
+function pageParams(query = {}) {
+  let page = parseInt(query.page, 10);
+  let size = parseInt(query.size, 10);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  if (!Number.isFinite(size) || size < 1) size = 50;
+  if (size > 500) size = 500;
+  return { page, size, offset: (page - 1) * size };
+}
+
+/**
+ * 按总数修正页码：数据变少后停在最后一页，不会查出空列表。
+ * 查列表前调用一次，返回修正后的 pg 可直接用其 offset。
+ */
+function clampPage(pg, total) {
+  const pages = Math.max(1, Math.ceil(total / pg.size));
+  if (pg.page > pages) { pg.page = pages; pg.offset = (pg.page - 1) * pg.size; }
+  return pg;
+}
+
+/** 组装分页元信息 */
+function pageMeta(total, pg) {
+  const pages = Math.max(1, Math.ceil(total / pg.size));
+  return {
+    total, page: Math.min(pg.page, pages), size: pg.size, pages,
+    hasPrev: pg.page > 1, hasNext: pg.page < pages
+  };
+}
+
 module.exports = {
   route, createServer, HttpError, bad, notFound, forbidden, ok,
-  createSession, getSession, destroySession, permissionsOf, clearPermCache, logAction
+  createSession, getSession, destroySession, permissionsOf, clearPermCache, logAction,
+  pageParams, pageMeta, clampPage
 };

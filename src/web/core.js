@@ -219,7 +219,8 @@ function findTitle(key) {
 }
 
 /* ---------------- 登录 ---------------- */
-function renderLogin(err) {
+/* 登录失败时把已填的账号密码回填，用户改一个字就能重试，不用重打 */
+function renderLogin(err, username, password) {
   return `<div class="login">
     <div class="login-left">
       <div>
@@ -232,8 +233,9 @@ function renderLogin(err) {
       <h2>登录</h2>
       <p>请输入账号和密码</p>
       ${err ? `<div class="login-err">${esc(err)}</div>` : ''}
-      <div class="login-field"><label>账号</label><input id="lg-u" autocomplete="username"></div>
+      <div class="login-field"><label>账号</label><input id="lg-u" autocomplete="username" value="${esc(username || '')}"></div>
       <div class="login-field"><label>密码</label><input id="lg-p" type="password" autocomplete="current-password"
+        value="${esc(password || '')}"
         onkeydown="if(event.key==='Enter')doLogin()"></div>
       <button class="login-btn" onclick="doLogin()">登 录</button>
       <div class="login-tip">
@@ -246,7 +248,12 @@ function renderLogin(err) {
 async function doLogin() {
   const u = document.getElementById('lg-u').value.trim();
   const p = document.getElementById('lg-p').value;
-  if (!u || !p) { document.getElementById('app').innerHTML = renderLogin('请输入账号和密码'); return; }
+  const rerender = msg => {
+    document.getElementById('app').innerHTML = renderLogin(msg, u, p);
+    const pw = document.getElementById('lg-p');
+    if (pw) { pw.focus(); pw.setSelectionRange(pw.value.length, pw.value.length); }
+  };
+  if (!u || !p) { rerender('请输入账号和密码'); return; }
   try {
     const d = await api('/auth/login', 'POST', { username: u, password: p });
     App.token = d.token;
@@ -255,7 +262,7 @@ async function doLogin() {
     await loadMe();
     go('dashboard');
   } catch (e) {
-    document.getElementById('app').innerHTML = renderLogin(e.message);
+    rerender(e.message);
   }
 }
 
@@ -288,6 +295,68 @@ function tableWrap(headers, rows, emptyText = '暂无数据') {
     <thead><tr>${headers.map(h => `<th class="${h.r ? 'r' : ''}">${h.label}</th>`).join('')}</tr></thead>
     <tbody>${rows.join('')}</tbody>
   </table></div>`;
+}
+
+/* ---------------- 分页 ---------------- */
+/* 每个列表各自记住页码、每页条数和筛选条件：翻页不丢筛选，改筛选回到第 1 页 */
+const Pager = {};
+const Filters = {};
+
+function pgState(key, size = 50) {
+  if (!Pager[key]) Pager[key] = { page: 1, size };
+  return Pager[key];
+}
+function filterState(key) {
+  if (!Filters[key]) Filters[key] = {};
+  return Filters[key];
+}
+/** 改筛选条件：记下来并回到第 1 页 */
+function setFilter(key, patch) {
+  Object.assign(filterState(key), patch);
+  pgState(key).page = 1;
+}
+/** 拼到接口地址后面的分页参数 */
+function pgQuery(key) {
+  const s = pgState(key);
+  return `page=${s.page}&size=${s.size}`;
+}
+function callLoader(loader) {
+  const fn = typeof loader === 'string' ? window[loader] : loader;
+  if (typeof fn === 'function') return fn();
+}
+function pgGo(key, loader, page) {
+  const s = pgState(key);
+  const p = Math.floor(Number(page));
+  s.page = Number.isFinite(p) && p >= 1 ? p : 1;
+  callLoader(loader);
+}
+function pgSize(key, loader, el) {
+  const s = pgState(key);
+  let n = Math.floor(Number(el.value));
+  if (!Number.isFinite(n) || n < 1) n = 50;
+  if (n > 500) n = 500;
+  el.value = n;
+  s.size = n; s.page = 1;
+  callLoader(loader);
+}
+/** 分页条：首页/上一页/下一页/末页 + 跳页 + 每页条数 */
+function pagerBar(key, meta, loader, unit = '条') {
+  if (!meta || !meta.total) return '';
+  const btn = (label, page, off) =>
+    `<button class="btn sm" ${off ? 'disabled' : ''} onclick="pgGo('${key}','${loader}',${page})">${label}</button>`;
+  return `<div class="pager">
+    <span class="hint">共 ${meta.total} ${unit}，第 <b>${meta.page}</b> / ${meta.pages} 页</span>
+    ${btn('首页', 1, meta.page <= 1)}${btn('上一页', meta.page - 1, meta.page <= 1)}
+    ${btn('下一页', meta.page + 1, meta.page >= meta.pages)}${btn('末页', meta.pages, meta.page >= meta.pages)}
+    <span class="spacer"></span>
+    <span class="hint">跳到</span>
+    <input class="inp num pg-jump" type="number" min="1" max="${meta.pages}" value="${meta.page}"
+      onchange="pgGo('${key}','${loader}',this.value)">
+    <span class="hint">页，每页</span>
+    <input class="inp num pg-size" type="number" min="1" max="500" value="${meta.size}"
+      onchange="pgSize('${key}','${loader}',this)">
+    <span class="hint">条</span>
+  </div>`;
 }
 
 function statusTag(s) {

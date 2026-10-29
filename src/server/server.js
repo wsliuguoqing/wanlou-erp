@@ -15,6 +15,7 @@ require('./routes/base');
 require('./routes/docs');
 require('./routes/inventory-reports');
 require('./routes/checks');
+require('./routes/exports');
 
 const PORT = Number(process.env.PORT) || 3000;
 const server = createServer();

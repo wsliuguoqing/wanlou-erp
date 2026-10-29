@@ -51,8 +51,16 @@ function bookQty(materialId, warehouseId) {
   const m = db.prepare('SELECT * FROM materials WHERE id=?').get(materialId);
   if (!m) return 0;
   if (m.type === 'master') {
-    return db.prepare("SELECT COUNT(*) n FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'").get(materialId, warehouseId).n;
+    // 胶带母卷（sub_unit = 'mm'）：按支数统计
+    if (m.sub_unit === 'mm') {
+      return db.prepare("SELECT COUNT(*) n FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'").get(materialId, warehouseId).n;
+    }
+    // 整进零出物料按零单位盘点，账面数包含整单位与零单位库存。
+    const r = db.prepare('SELECT qty,sub_qty FROM inventory WHERE material_id=? AND warehouse_id=?').get(materialId, warehouseId);
+    const perPack = Number(m.base_width) || 1;
+    return roundCheckQty((r?.qty || 0) * perPack + (r?.sub_qty || 0), m);
   }
+  // 普通物料：直接读数量
   const r = db.prepare('SELECT qty FROM inventory WHERE material_id=? AND warehouse_id=?').get(materialId, warehouseId);
   return r?.qty || 0;
 }
@@ -80,7 +88,7 @@ route('GET', '/api/checks/:id', async (ctx) => {
   ctx.need('check.view');
   const c = db.prepare('SELECT * FROM stock_checks WHERE id=?').get(Number(ctx.params.id));
   if (!c) notFound('盘点单不存在');
-  const items = db.prepare(`SELECT i.*, m.name AS material_name, m.code AS material_code, m.spec, m.unit, m.type AS material_type
+  const items = db.prepare(`SELECT i.*, m.name AS material_name, m.code AS material_code, m.spec, m.unit, m.type AS material_type, m.sub_unit, m.base_width
                             FROM stock_check_items i LEFT JOIN materials m ON m.id=i.material_id
                             WHERE i.check_id=? ORDER BY i.id`).all(c.id);
   const w = db.prepare('SELECT name FROM warehouses WHERE id=?').get(c.warehouse_id);
@@ -134,8 +142,15 @@ route('PUT', '/api/checks/:id', async (ctx) => {
     if (!row) continue;
     const real = Number(it.real_qty);
     if (isNaN(real) || real < 0) bad('实盘数量必须是不小于 0 的数字');
+    const material = db.prepare('SELECT * FROM materials WHERE id=?').get(row.material_id);
+    if (material?.type === 'master' && material.sub_unit && material.sub_unit !== 'mm') {
+      const step = material.sub_unit === '米' ? 0.1 : 1;
+      if (Math.abs(real / step - Math.round(real / step)) > 1e-6) {
+        bad(`${material.name} 的 ${material.sub_unit} 数量最小按 ${step} 递增`);
+      }
+    }
     db.prepare('UPDATE stock_check_items SET real_qty=?, diff_qty=?, remark=? WHERE id=?')
-      .run(round3(real), round3(real - row.book_qty), it.remark || '', row.id);
+      .run(roundCheckQty(real, material), roundCheckQty(real - row.book_qty, material), it.remark || '', row.id);
   }
   recompute(id);
   if (ctx.body.remark !== undefined) {
@@ -173,8 +188,8 @@ route('POST', '/api/checks/:id/approve', async (ctx) => {
     const diff = Number(it.diff_qty) || 0;
     if (Math.abs(diff) < 1e-9) continue;
     const m = db.prepare('SELECT * FROM materials WHERE id=?').get(it.material_id);
-    if (m.type === 'master') {
-      // 母卷：盘盈补建空卷，盘亏作废最早的开卷
+    if (m.type === 'master' && m.sub_unit === 'mm') {
+      // 胶带母卷：盘盈补建空卷，盘亏作废最早的开卷
       if (diff > 0) {
         for (let i = 0; i < Math.round(diff); i++) {
           db.prepare(`INSERT INTO rolls(material_id,warehouse_id,batch_no,width_total,width_used,cost,status,created_at)
@@ -186,7 +201,23 @@ route('POST', '/api/checks/:id/approve', async (ctx) => {
           .all(m.id, c.warehouse_id, Math.round(-diff));
         for (const roll of open) db.prepare("UPDATE rolls SET status='used' WHERE id=?").run(roll.id);
       }
+    } else if (m.type === 'master' && m.sub_unit !== 'mm') {
+      // 差异以零单位计算，再拆分回整单位和零单位。
+      const perPack = Number(m.base_width) || 1;
+      const invRow = db.prepare('SELECT qty,sub_qty FROM inventory WHERE material_id=? AND warehouse_id=?').get(m.id, c.warehouse_id) || { qty: 0, sub_qty: 0 };
+      const before = (invRow.qty || 0) * perPack + (invRow.sub_qty || 0);
+      const after = roundCheckQty(before + diff, m);
+      const whole = Math.floor((after + 1e-8) / perPack);
+      const loose = roundCheckQty(after - whole * perPack, m);
+      db.prepare(`INSERT INTO inventory(material_id,warehouse_id,qty,sub_qty) VALUES (?,?,?,?)
+                  ON CONFLICT(material_id,warehouse_id) DO UPDATE SET qty=excluded.qty,sub_qty=excluded.sub_qty`)
+        .run(m.id, c.warehouse_id, whole, loose);
+      db.prepare(`INSERT INTO inventory_logs(material_id,warehouse_id,doc_type,doc_sn,qty_change,qty_before,qty_after,cost,amount,remark,operator_id,created_at)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(m.id, c.warehouse_id, 'CHECK', c.sn, diff, before, after,
+          m.cost || 0, Math.abs(diff) * (m.cost || 0), diff > 0 ? '盘盈' : '盘亏', ctx.user.userId, now());
     } else {
+      // 普通物料：直接调整 inventory
       const before = bookQty(m.id, c.warehouse_id);
       const after = before + diff;
       db.prepare(`INSERT INTO inventory(material_id,warehouse_id,qty) VALUES (?,?,?)
@@ -218,6 +249,12 @@ route('POST', '/api/checks/:id/void', async (ctx) => {
 
 function statusName(s) {
   return { draft: '盘点中', pending: '待审核', approved: '已审核', void: '已作废' }[s] || s;
+}
+
+function roundCheckQty(n, m) {
+  return m?.sub_unit === '米'
+    ? Math.round((Number(n) || 0) * 10) / 10
+    : round3(n);
 }
 
 module.exports = {};

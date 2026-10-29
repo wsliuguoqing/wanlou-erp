@@ -1,5 +1,5 @@
 'use strict';
-const { route, bad, notFound, logAction } = require('../http-framework');
+const { route, bad, notFound, forbidden, logAction, pageParams, pageMeta, clampPage } = require('../http-framework');
 const { db, now, today } = require('../db');
 const { round2, round3, round4 } = require('./docs');
 const { totalStock, receivableMap, payableMap } = require('./base');
@@ -7,25 +7,29 @@ const { totalStock, receivableMap, payableMap } = require('./base');
 /* ==================== 库存查询 ==================== */
 route('GET', '/api/inventory', async (ctx) => {
   ctx.need('inventory.view');
-  const { keyword = '', type = '', warehouse_id = '', low = '' } = ctx.query;
+  const { keyword = '', brand = '', uploaded_by = '', type = '', warehouse_id = '', low = '' } = ctx.query;
+  if (uploaded_by && !ctx.can('material.create')) forbidden('只有有物料上传权限的员工可以按上传员工筛选');
   const showCost = ctx.can('cost.view');
 
-  let sql = 'SELECT m.* FROM materials m WHERE m.status=1';
+  let sql = 'SELECT m.*,u.name AS uploader_name FROM materials m LEFT JOIN users u ON u.id=m.created_by WHERE m.status=1';
   const args = [];
   if (keyword) {
-    sql += ' AND (m.name LIKE ? OR m.code LIKE ? OR m.spec LIKE ? OR m.brand LIKE ? OR m.barcode LIKE ?)';
-    args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+    sql += ' AND (m.name LIKE ? OR m.code LIKE ? OR m.model LIKE ? OR m.spec LIKE ? OR m.brand LIKE ? OR m.barcode LIKE ?)';
+    args.push(...Array(6).fill(`%${keyword}%`));
   }
+  if (brand) { sql += ' AND m.brand LIKE ?'; args.push(`%${brand}%`); }
+  if (uploaded_by) { sql += ' AND m.created_by=?'; args.push(Number(uploaded_by)); }
   if (type) { sql += ' AND m.type=?'; args.push(type); }
   sql += ' ORDER BY m.id DESC';
   const mats = db.prepare(sql).all(...args);
 
   const wid = warehouse_id ? Number(warehouse_id) : null;
   const warehouses = db.prepare('SELECT id,name FROM warehouses WHERE status=1').all();
-  const typeName = { normal: '普通', master: '母卷', sub: '子卷', waste: '料头', product: '成品' };
+  const typeName = { normal: '整进整出', master: '整进零出', sub: '已拆分', waste: '余料', product: '成品' };
 
   let rows = mats.map(m => {
-    if (m.type === 'master') {
+    // 模式 A：胶带母卷（按宽度 mm 分切）
+    if (m.type === 'master' && m.sub_unit === 'mm') {
       const rollSql = wid
         ? "SELECT * FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'"
         : "SELECT * FROM rolls WHERE material_id=? AND status='open'";
@@ -38,10 +42,10 @@ route('GET', '/api/inventory', async (ctx) => {
       const waste = wid ? db.prepare(wasteSql).get(m.id, wid).n : db.prepare(wasteSql).get(m.id).n;
       const availableWidth = open.reduce((s, r) => s + (r.width_total - r.width_used), 0);
       const row = {
-        material_id: m.id, code: m.code, name: m.name, brand: m.brand, spec: m.spec, unit: m.unit,
-        type: m.type, typeName: typeName[m.type], warehouse_id: wid || null,
+        material_id: m.id, code: m.code, name: m.name, model: m.model, model_edited: m.model_edited, brand: m.brand, spec: m.spec, unit: m.unit, sub_unit: m.sub_unit,
+        type: m.type, typeName: typeName[m.type], uploader_name: m.uploader_name || '', warehouse_id: wid || null,
         warehouse_name: wid ? (warehouses.find(w => w.id === wid)?.name || '') : '全部仓库',
-        qty: open.length, available_width: round3(availableWidth),
+        qty: open.length, available_width: round3(availableWidth), sub_qty: 0,
         roll_count: open.length, waste_count: waste,
         safety_stock: m.safety_stock, base_width: m.base_width, min_waste: m.min_waste,
         cost: m.cost, amount: round2(open.reduce((s, r) => s + r.cost, 0))
@@ -49,16 +53,19 @@ route('GET', '/api/inventory', async (ctx) => {
       if (!showCost) { delete row.cost; delete row.amount; }
       return row;
     }
+    // 模式 B：箱装小卷（整箱 + 散卷），或普通物料
     const stockRows = wid
-      ? db.prepare('SELECT qty FROM inventory WHERE material_id=? AND warehouse_id=?').all(m.id, wid)
-      : db.prepare('SELECT qty FROM inventory WHERE material_id=?').all(m.id);
+      ? db.prepare('SELECT qty,sub_qty FROM inventory WHERE material_id=? AND warehouse_id=?').all(m.id, wid)
+      : db.prepare('SELECT qty,sub_qty FROM inventory WHERE material_id=?').all(m.id);
     const qty = stockRows.reduce((s, r) => s + r.qty, 0);
+    const subQty = m.type === 'master' && m.sub_unit ? stockRows.reduce((s, r) => s + (r.sub_qty || 0), 0) : 0;
     const row = {
-      material_id: m.id, code: m.code, name: m.name, brand: m.brand, spec: m.spec, unit: m.unit,
-      type: m.type, typeName: typeName[m.type], warehouse_id: wid || null,
+      material_id: m.id, code: m.code, name: m.name, model: m.model, model_edited: m.model_edited, brand: m.brand, spec: m.spec, unit: m.unit, sub_unit: m.sub_unit,
+      type: m.type, typeName: typeName[m.type], uploader_name: m.uploader_name || '', warehouse_id: wid || null,
       warehouse_name: wid ? (warehouses.find(w => w.id === wid)?.name || '') : '全部仓库',
-      qty: round3(qty), available_width: null, roll_count: 0, waste_count: 0,
-      safety_stock: m.safety_stock, cost: m.cost, amount: round2(qty * (m.cost || 0))
+      qty: round3(qty), sub_qty: subQty, available_width: null, roll_count: 0, waste_count: 0,
+      safety_stock: m.safety_stock, base_width: m.base_width, cost: m.cost,
+      amount: round2((qty * (m.base_width || 1) + subQty) * (m.cost || 0))  // 总成本 = (整箱数 × 每箱小卷数 + 散卷数) × 单价
     };
     if (!showCost) { delete row.cost; delete row.amount; }
     return row;
@@ -70,14 +77,24 @@ route('GET', '/api/inventory', async (ctx) => {
   const totalAmount = showCost ? round2(rows.reduce((s, r) => s + (r.amount || 0), 0)) : null;
   const lowCount = rows.filter(r => (r.qty || 0) < (r.safety_stock || 0)).length;
 
+  // 统计按全部筛选结果算，列表按页切（低库存筛选在内存里做，故在此分页）
+  const stats = {
+    kindCount: rows.length,
+    lowCount,
+    totalAmount: totalAmount,
+    zeroCount: rows.filter(r => (r.qty || 0) <= 0).length
+  };
+  const all = ctx.query.all === '1';
+  const pg = clampPage(pageParams(ctx.query), rows.length);
+  const list = all ? rows : rows.slice(pg.offset, pg.offset + pg.size);
+
+  const uploaders = ctx.can('material.create')
+    ? db.prepare(`SELECT DISTINCT u.id,u.name,u.employee_no FROM users u JOIN materials m ON m.created_by=u.id
+                  WHERE u.status=1 AND m.status=1 ORDER BY u.name`).all()
+    : [];
   return {
-    list: rows, warehouses, typeName,
-    stats: {
-      kindCount: rows.length,
-      lowCount,
-      totalAmount: totalAmount,
-      zeroCount: rows.filter(r => (r.qty || 0) <= 0).length
-    }
+    list, warehouses, uploaders, typeName, stats,
+    page: all ? null : pageMeta(rows.length, pg)
   };
 });
 
@@ -85,22 +102,32 @@ route('GET', '/api/inventory', async (ctx) => {
 route('GET', '/api/inventory/logs', async (ctx) => {
   ctx.need('inventory.log');
   const { material_id = '', from = '', to = '', warehouse_id = '' } = ctx.query;
-  let sql = `SELECT l.*, m.name AS material_name, m.code AS material_code, m.unit
+  let sql = `SELECT l.*, m.name AS material_name, m.code AS material_code, m.unit,
+                    m.type AS material_type, m.sub_unit
              FROM inventory_logs l LEFT JOIN materials m ON m.id=l.material_id WHERE 1=1`;
   const args = [];
   if (material_id) { sql += ' AND l.material_id=?'; args.push(Number(material_id)); }
   if (warehouse_id) { sql += ' AND l.warehouse_id=?'; args.push(Number(warehouse_id)); }
   if (from) { sql += ' AND l.created_at >= ?'; args.push(from + ' 00:00:00'); }
   if (to) { sql += ' AND l.created_at <= ?'; args.push(to + ' 23:59:59'); }
-  sql += ' ORDER BY l.id DESC LIMIT 1000';
-  const rows = db.prepare(sql).all(...args);
+
+  // 分页
+  const pg = pageParams(ctx.query);
+  const cntSql = sql.replace(
+    /SELECT l\.\*, m\.name AS material_name, m\.code AS material_code, m\.unit,\s*m\.type AS material_type, m\.sub_unit/,
+    'SELECT COUNT(*) AS n');
+  const total = db.prepare(cntSql).get(...args).n;
+
+  sql += ' ORDER BY l.id DESC LIMIT ? OFFSET ?';
+  const rows = db.prepare(sql).all(...args, pg.size, pg.offset);
+
   const showCost = ctx.can('cost.view');
   const list = rows.map(r => {
     const o = { ...r };
     if (!showCost) { delete o.cost; delete o.amount; }
     return o;
   });
-  return { list };
+  return { list, page: pageMeta(total, pg) };
 });
 
 /* ---------- 母卷明细（每支的剩余宽度） ---------- */
@@ -108,17 +135,20 @@ route('GET', '/api/inventory/rolls', async (ctx) => {
   ctx.need('inventory.view');
   const { material_id = '' } = ctx.query;
   if (!material_id) bad('请指定物料');
+  const pg = pageParams(ctx.query);
+  const total = db.prepare('SELECT COUNT(*) AS c FROM rolls WHERE material_id=?').get(Number(material_id)).c;
   const rows = db.prepare(`SELECT r.*, m.name AS material_name, w.name AS warehouse_name
                            FROM rolls r LEFT JOIN materials m ON m.id=r.material_id
                            LEFT JOIN warehouses w ON w.id=r.warehouse_id
-                           WHERE r.material_id=? ORDER BY r.id`).all(Number(material_id));
+                           WHERE r.material_id=? ORDER BY r.id LIMIT ? OFFSET ?`).all(Number(material_id), pg.size, pg.offset);
   const showCost = ctx.can('cost.view');
   return {
     list: rows.map(r => {
       const o = { ...r, remain_width: round3(r.width_total - r.width_used) };
       if (!showCost) delete o.cost;
       return o;
-    })
+    }),
+    page: pageMeta(total, pg)
   };
 });
 
@@ -186,9 +216,9 @@ route('GET', '/api/reports/summary', async (ctx) => {
       if (warehouse_id) { sql += ' AND warehouse_id=?'; args.push(Number(warehouse_id)); }
       return db.prepare(sql).get(...args).s;
     };
-    // 母卷用支数近似：用 rolls 表当前状态推算
+    // 仅 mm 胶带母卷从 rolls 表读取支数；其他整进零出物料以零单位流水统计。
     let opening = inv();
-    if (m.type === 'master') {
+    if (m.type === 'master' && m.sub_unit === 'mm') {
       let sql = `SELECT COUNT(*) n FROM rolls WHERE material_id=? AND created_at < ?`;
       const args = [m.id, start + ' 00:00:00'];
       if (warehouse_id) { sql += ' AND warehouse_id=?'; args.push(Number(warehouse_id)); }
@@ -205,12 +235,18 @@ route('GET', '/api/reports/summary', async (ctx) => {
 
     const inQty = Math.abs(mover(['IN', 'SRET'], 1));
     const outQty = Math.abs(mover(['OUT', 'PRET'], -1));
-    const closing = m.type === 'master'
-      ? db.prepare("SELECT COUNT(*) n FROM rolls WHERE material_id=? AND status='open'").get(m.id).n
+    const closing = m.type === 'master' && m.sub_unit === 'mm'
+      ? (() => {
+          let sql = "SELECT COUNT(*) n FROM rolls WHERE material_id=? AND status='open'";
+          const args = [m.id];
+          if (warehouse_id) { sql += ' AND warehouse_id=?'; args.push(Number(warehouse_id)); }
+          return db.prepare(sql).get(...args).n;
+        })()
       : opening + inQty - outQty;
 
     return {
-      code: m.code, name: m.name, spec: m.spec, unit: m.unit,
+      code: m.code, name: m.name, spec: m.spec,
+      unit: m.type === 'master' && m.sub_unit && m.sub_unit !== 'mm' ? m.sub_unit : m.unit,
       opening: round3(opening), in_qty: round3(inQty), out_qty: round3(outQty), closing: round3(closing),
       opening_amount: round2(opening * (m.cost || 0)),
       closing_amount: round2(closing * (m.cost || 0))
@@ -316,30 +352,37 @@ route('GET', '/api/reports/payable', async (ctx) => {
 route('GET', '/api/payments', async (ctx) => {
   const type = ctx.query.type === 'pay' ? 'pay' : 'receive';
   ctx.need(type === 'pay' ? 'payment.pay' : 'payment.receive');
+
+  const total = db.prepare('SELECT COUNT(*) AS n FROM payments WHERE type=?').get(type).n;
+  const pg = clampPage(pageParams(ctx.query), total);
   const rows = db.prepare(`SELECT p.*, u.name AS operator FROM payments p
                            LEFT JOIN users u ON u.id=p.created_by
-                           WHERE p.type=? ORDER BY p.id DESC LIMIT 500`).all(type);
+                           WHERE p.type=? ORDER BY p.id DESC LIMIT ? OFFSET ?`)
+    .all(type, pg.size, pg.offset);
   const list = rows.map(r => {
     const partnerName = type === 'receive'
       ? db.prepare('SELECT name FROM customers WHERE id=?').get(r.partner_id)?.name
       : db.prepare('SELECT name FROM suppliers WHERE id=?').get(r.partner_id)?.name;
     return { ...r, partner_name: partnerName || '' };
   });
-  return { list };
+  return { list, page: pageMeta(total, pg) };
 });
 
 /* ==================== 操作日志 ==================== */
 route('GET', '/api/logs', async (ctx) => {
   ctx.need('log.view');
-  const { keyword = '', from = '', to = '', limit = 200 } = ctx.query;
-  let sql = 'SELECT * FROM operation_logs WHERE 1=1';
+  const { keyword = '', from = '', to = '' } = ctx.query;
+  let sql = ' FROM operation_logs WHERE 1=1';
   const args = [];
   if (keyword) { sql += ' AND (username LIKE ? OR action LIKE ? OR module LIKE ? OR detail LIKE ?)'; args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
   if (from) { sql += ' AND created_at >= ?'; args.push(from + ' 00:00:00'); }
   if (to) { sql += ' AND created_at <= ?'; args.push(to + ' 23:59:59'); }
-  sql += ' ORDER BY id DESC LIMIT ?';
-  args.push(Math.min(Number(limit) || 200, 1000));
-  return { list: db.prepare(sql).all(...args) };
+
+  const total = db.prepare('SELECT COUNT(*) AS n' + sql).get(...args).n;
+  const pg = clampPage(pageParams(ctx.query), total);
+  const list = db.prepare('SELECT *' + sql + ' ORDER BY id DESC LIMIT ? OFFSET ?')
+    .all(...args, pg.size, pg.offset);
+  return { list, page: pageMeta(total, pg) };
 });
 
 /* ==================== 经营趋势（按月销售额与毛利） ==================== */

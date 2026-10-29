@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>导出功能前端测试</title>
+</head>
+<body>
+  <h1>导出功能前端测试</h1>
+  <p>打开浏览器控制台查看结果</p>
+  <button id="testBtn">点击测试导出</button>
+  <pre id="log"></pre>
+
+  <script>
+    const log = msg => {
+      console.log(msg);
+      document.getElementById('log').textContent += msg + '\n';
+    };
+
+    // 模拟 App.token
+    window.App = { token: '' };
+
+    // 模拟 toast
+    window.toast = (msg, type) => log(`[${type}] ${msg}`);
+
+    // 复制真实的 exportDoc 函数
+    async function exportDoc(key, id, kind) {
+      try {
+        const url = `/api/export/docs/${key}/${id}?kind=${kind}`;
+        const res = await fetch(url, { headers: { Authorization: 'Bearer ' + App.token } });
+        if (!res.ok) throw new Error('导出失败');
+
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        let filename = `单据_${id}.xlsx`;
+        const match = disposition.match(/filename[^;=\n]*=["']?([^"';\n]*)["']?/);
+        if (match && match[1]) filename = decodeURIComponent(match[1]);
+
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(objUrl);
+        }, 100);
+        toast(kind === 'delivery' ? '送货单已导出' : 'Excel 已导出', 'ok');
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    }
+
+    document.getElementById('testBtn').addEventListener('click', async () => {
+      log('开始测试...');
+
+      // 1. 先登录拿 token
+      try {
+        const loginRes = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: 'admin', password: 'admin123' })
+        });
+        const loginData = await loginRes.json();
+        if (!loginData.ok) throw new Error('登录失败');
+        App.token = loginData.data.token;
+        log('✓ 登录成功，token: ' + App.token.slice(0, 20) + '...');
+      } catch (e) {
+        log('✗ 登录失败: ' + e.message);
+        return;
+      }
+
+      // 2. 找一张已审核单据
+      try {
+        const docsRes = await fetch('/api/docs/out?page=1&size=10', {
+          headers: { Authorization: 'Bearer ' + App.token }
+        });
+        const docsData = await docsRes.json();
+        if (!docsData.ok) throw new Error('获取单据失败');
+        const approved = docsData.data.list.find(d => d.status === 'approved');
+        if (!approved) {
+          log('! 没有已审核单据，无法测试');
+          return;
+        }
+        log(`✓ 找到已审核单据: ${approved.sn} (ID ${approved.id})`);
+
+        // 3. 调用导出函数
+        log('开始导出单据正本...');
+        await exportDoc('out', approved.id, 'doc');
+
+        log('等待 2 秒后导出送货单...');
+        await new Promise(r => setTimeout(r, 2000));
+        await exportDoc('out', approved.id, 'delivery');
+
+        log('✅ 测试完成，检查是否成功下载了两个文件');
+      } catch (e) {
+        log('✗ 测试失败: ' + e.message);
+      }
+    });
+  </script>
+</body>
+</html>

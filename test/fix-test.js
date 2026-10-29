@@ -55,13 +55,11 @@ async function expectFail(fn, re, m) {
   await expectFail(() => api('/api/materials', 'POST', { name: '母卷无宽度', unit: '支', type: 'master' }),
     /宽度/, '可分割物料必须填整支宽度');
 
-  /* 3. 库存为 0 时，审核应被拒绝（提交前端已拦，这里验证后端兜底） */
-  const out0 = await api('/api/docs/out', 'POST', {
+  /* 3. 库存为 0 时，提交审核这一步就该被拒绝（不再拖到审核时才报错） */
+  await expectFail(() => api('/api/docs/out', 'POST', {
     doc_date: '2026-10-24', partner_id: cust.id, warehouse_id: wh.id,
     items: [{ material_id: mat.id, qty: 5, price: 100 }], submit: true
-  });
-  await expectFail(() => api(`/api/docs/${out0.id}/approve`, 'POST'),
-    /不足|没有|库存/, '库存为 0 时审核被拒绝');
+  }), /不足|没有|库存/, '库存为 0 时提交审核被拒绝');
 
   /* 4. 入库 10 套 */
   const inDoc = await api('/api/docs/in', 'POST', {

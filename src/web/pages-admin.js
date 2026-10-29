@@ -8,6 +8,7 @@ page('users', () => {
   const rows = (AdminState.users || []).map(u => `<tr>
     <td class="mono">${esc(u.username)}</td>
     <td>${esc(u.name)}</td>
+    <td class="mono">${esc(u.employee_no || '—')}</td>
     <td><span class="tag ${u.role === 'admin' ? 'no' : 'info'}">${ROLE_NAME[u.role] || u.role}</span></td>
     <td class="num">${esc(u.phone || '')}</td>
     <td>${u.status ? '<span class="tag ok">启用</span>' : '<span class="tag mute">停用</span>'}</td>
@@ -23,7 +24,7 @@ page('users', () => {
     <h1 class="pg">员工管理</h1>
     <p class="pg-sub">只有超级管理员可以管理员工账号。新增员工时设定初始密码，员工登录后可自行修改。</p>
     <div class="bar">
-      <input class="inp" style="width:200px" placeholder="搜索账号、姓名、电话" id="u-kw" onkeydown="if(event.key==='Enter')loadUsers(this.value)">
+      <input class="inp" style="width:200px" placeholder="搜索账号、姓名、工号、电话" id="u-kw" onkeydown="if(event.key==='Enter')loadUsers(this.value)">
       <select class="inp" style="width:140px" id="u-role" onchange="loadUsers(document.getElementById('u-kw').value)">
         <option value="">全部角色</option>
         ${Object.entries(ROLE_NAME).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
@@ -32,7 +33,7 @@ page('users', () => {
       <div class="spacer"></div>
       <button class="btn primary" onclick="editUser()">＋ 新增员工</button>
     </div>
-    ${tableWrap([{ label: '账号' }, { label: '姓名' }, { label: '角色' }, { label: '电话' }, { label: '状态' }, { label: '最后登录' }, { label: '操作' }],
+    ${tableWrap([{ label: '账号' }, { label: '姓名' }, { label: '工号' }, { label: '角色' }, { label: '电话' }, { label: '状态' }, { label: '最后登录' }, { label: '操作' }],
       rows, '还没有员工')}`;
 });
 page('users').afterRender = () => loadUsers();
@@ -54,6 +55,7 @@ function editUser(id) {
       <div class="field"><label>登录账号 *</label>
         <input class="inp" id="u-username" value="${esc(u.username || '')}" ${id ? 'readonly' : ''} placeholder="字母或数字，3-20位"></div>
       <div class="field"><label>姓名 *</label><input class="inp" id="u-name" value="${esc(u.name || '')}"></div>
+      <div class="field"><label>员工工号 *</label><input class="inp" id="u-employee-no" value="${esc(u.employee_no || '')}" placeholder="用于生成出库单号"></div>
       <div class="field"><label>角色 *</label>
         <select class="inp" id="u-role-sel">
           ${Object.entries(ROLE_NAME).map(([k, v]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${v}</option>`).join('')}
@@ -71,6 +73,7 @@ function editUser(id) {
 async function saveUser(id) {
   const body = {
     name: document.getElementById('u-name').value.trim(),
+    employee_no: document.getElementById('u-employee-no').value.trim(),
     role: document.getElementById('u-role-sel').value,
     phone: document.getElementById('u-phone').value
   };
@@ -81,6 +84,7 @@ async function saveUser(id) {
     if (!body.password || body.password.length < 6) return toast('初始密码至少 6 位', 'err');
   }
   if (!body.name) return toast('请填写姓名', 'err');
+  if (!body.employee_no) return toast('请填写员工工号', 'err');
   try {
     if (id) await api('/users/' + id, 'PUT', body);
     else await api('/users', 'POST', body);
@@ -202,6 +206,7 @@ async function resetRole(role) {
 
 /* ==================== 操作日志 ==================== */
 page('oplogs', () => {
+  const f = filterState('oplogs');
   const rows = (AdminState.logs || []).map(l => `<tr>
     <td class="num">${esc(l.created_at)}</td>
     <td>${esc(l.username || '')}</td>
@@ -214,19 +219,23 @@ page('oplogs', () => {
     <h1 class="pg">操作日志</h1>
     <p class="pg-sub">记录谁在什么时间做了什么，出问题时用来追溯</p>
     <div class="bar">
-      <input class="inp" style="width:220px" placeholder="搜索操作人、动作、内容" id="lg-kw" onkeydown="if(event.key==='Enter')loadOpLogs()">
-      <button class="btn" onclick="loadOpLogs()">搜索</button>
+      <input class="inp" style="width:220px" placeholder="搜索操作人、动作、内容" id="lg-kw" value="${esc(f.keyword || '')}"
+        onkeydown="if(event.key==='Enter')loadOpLogs(true)">
+      <button class="btn" onclick="loadOpLogs(true)">搜索</button>
     </div>
     ${tableWrap([{ label: '时间' }, { label: '操作人' }, { label: '动作' }, { label: '模块' }, { label: '详情' }, { label: 'IP' }],
-      rows, '没有日志')}`;
+      rows, '没有日志')}
+    ${pagerBar('oplogs', AdminState.logPage, 'loadOpLogs')}`;
 });
 page('oplogs').afterRender = () => loadOpLogs();
 
-async function loadOpLogs() {
-  const kw = document.getElementById('lg-kw')?.value || '';
+async function loadOpLogs(reset) {
+  if (reset) setFilter('oplogs', { keyword: document.getElementById('lg-kw')?.value || '' });
+  const f = filterState('oplogs');
   try {
-    const d = await api('/logs?keyword=' + encodeURIComponent(kw));
+    const d = await api('/logs?keyword=' + encodeURIComponent(f.keyword || '') + '&' + pgQuery('oplogs'));
     AdminState.logs = d.list;
+    AdminState.logPage = d.page;
     if (App.route === 'oplogs') document.getElementById('page').innerHTML = PAGES.oplogs();
   } catch (e) { toast(e.message, 'err'); }
 }

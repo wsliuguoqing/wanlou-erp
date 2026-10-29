@@ -1,23 +1,35 @@
 'use strict';
-const { route, bad, notFound, forbidden, logAction } = require('../http-framework');
+const { route, bad, notFound, forbidden, logAction, pageParams, pageMeta, clampPage } = require('../http-framework');
 const { db, now } = require('../db');
 
 /* ==================== 客户 ==================== */
 route('GET', '/api/customers', async (ctx) => {
   ctx.need('customer.view');
-  const { keyword = '', status = '' } = ctx.query;
-  let sql = `SELECT c.*, u.name AS salesperson_name FROM customers c
-             LEFT JOIN users u ON u.id = c.salesperson_id WHERE 1=1`;
+  const { keyword = '', status = '', salesperson_id = '' } = ctx.query;
+  let sql = `FROM customers c LEFT JOIN users u ON u.id = c.salesperson_id WHERE 1=1`;
   const args = [];
   // 销售员只能看自己负责的客户
   if (ctx.user.role === 'sales') { sql += ' AND c.salesperson_id = ?'; args.push(ctx.user.userId); }
+  if (salesperson_id) { sql += ' AND c.salesperson_id = ?'; args.push(Number(salesperson_id)); }
   if (keyword) { sql += ' AND (c.name LIKE ? OR c.contact LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)'; args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
   if (status !== '') { sql += ' AND c.status=?'; args.push(Number(status)); }
-  sql += ' ORDER BY c.id DESC';
-  const list = db.prepare(sql).all(...args);
+
+  const total = db.prepare('SELECT COUNT(*) AS n ' + sql).get(...args).n;
+  const pg = clampPage(pageParams(ctx.query), total);
+  // all=1：单据里的客户下拉框要拿全部，不分页
+  const list = ctx.query.all === '1'
+    ? db.prepare(`SELECT c.*, u.name AS salesperson_name ` + sql + ' ORDER BY c.id DESC').all(...args)
+    : db.prepare(`SELECT c.*, u.name AS salesperson_name ` + sql +
+        ' ORDER BY c.id DESC LIMIT ? OFFSET ?').all(...args, pg.size, pg.offset);
   // 应收余额
   const arMap = receivableMap();
-  return { list: list.map(c => ({ ...c, receivable: arMap.get(c.id) || 0 })) };
+  const salespeople = ctx.user.role === 'sales'
+    ? []
+    : db.prepare("SELECT id,name,employee_no FROM users WHERE role='sales' AND status=1 ORDER BY name").all();
+  return {
+    list: list.map(c => ({ ...c, receivable: arMap.get(c.id) || 0 })),
+    page: ctx.query.all === '1' ? null : pageMeta(total, pg), salespeople
+  };
 });
 
 route('POST', '/api/customers', async (ctx) => {
@@ -65,14 +77,22 @@ route('DELETE', '/api/customers/:id', async (ctx) => {
 route('GET', '/api/suppliers', async (ctx) => {
   ctx.need('supplier.view');
   const { keyword = '', status = '' } = ctx.query;
-  let sql = 'SELECT * FROM suppliers WHERE 1=1';
+  let sql = ' FROM suppliers WHERE 1=1';
   const args = [];
   if (keyword) { sql += ' AND (name LIKE ? OR contact LIKE ? OR phone LIKE ? OR code LIKE ?)'; args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
   if (status !== '') { sql += ' AND status=?'; args.push(Number(status)); }
-  sql += ' ORDER BY id DESC';
-  const list = db.prepare(sql).all(...args);
+
+  const total = db.prepare('SELECT COUNT(*) AS n' + sql).get(...args).n;
+  const pg = clampPage(pageParams(ctx.query), total);
+  // all=1：单据里的供应商下拉框要拿全部，不分页
+  const list = ctx.query.all === '1'
+    ? db.prepare('SELECT *' + sql + ' ORDER BY id DESC').all(...args)
+    : db.prepare('SELECT *' + sql + ' ORDER BY id DESC LIMIT ? OFFSET ?').all(...args, pg.size, pg.offset);
   const apMap = payableMap();
-  return { list: list.map(s => ({ ...s, payable: apMap.get(s.id) || 0 })) };
+  return {
+    list: list.map(s => ({ ...s, payable: apMap.get(s.id) || 0 })),
+    page: ctx.query.all === '1' ? null : pageMeta(total, pg)
+  };
 });
 
 route('POST', '/api/suppliers', async (ctx) => {
@@ -114,30 +134,39 @@ route('DELETE', '/api/suppliers/:id', async (ctx) => {
 
 /* ==================== 物料 ==================== */
 /**
- * normal = 不可分割（整件出入库，如电缆附件、接头、端子）
- * master = 可分割母卷（如胶带整支，出库时按宽度分切）
+ * normal = 整进整出（只使用一个单位）
+ * master = 整进零出（整单位与零单位换算）；sub_unit=mm 时为胶带分切
  * sub    = 已分切子卷（系统自动生成，不手工新建）
  * waste  = 料头（剩余宽度不足，系统自动标记）
  */
-const MATERIAL_TYPES = { normal: '不可分割', master: '可分割母卷', sub: '已分切子卷', waste: '料头' };
-/** 新建物料时可选的类型（子卷和料头由系统生成） */
-const CREATABLE_TYPES = { normal: '不可分割', master: '可分割母卷' };
+const MATERIAL_TYPES = { normal: '整进整出', master: '整进零出', sub: '已拆分', waste: '余料' };
+/** 新建物料时可选的类型（拆分件和余料由系统生成） */
+const CREATABLE_TYPES = { normal: '整进整出', master: '整进零出' };
 /** 常用单位 */
 const COMMON_UNITS = ['个', '只', '套', '台', '件', '箱', '盒', '包', '卷', '支', '米', '千克', '吨', '付', '张', '片'];
 
 route('GET', '/api/materials', async (ctx) => {
   ctx.need('material.view');
-  const { keyword = '', type = '', warehouse_id = '' } = ctx.query;
-  let sql = `SELECT m.*, u.name AS unit FROM materials m LEFT JOIN materials u ON 0 WHERE 1=1`
-    .replace(' u.name AS unit FROM materials m LEFT JOIN materials u ON 0 WHERE 1=1', ' * FROM materials m WHERE 1=1');
+  const { keyword = '', type = '', warehouse_id = '', all = '' } = ctx.query;
+  let where = ' WHERE 1=1';
   const args = [];
   if (keyword) {
-    sql += ' AND (m.name LIKE ? OR m.code LIKE ? OR m.spec LIKE ? OR m.brand LIKE ? OR m.barcode LIKE ?)';
-    args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+    where += ' AND (name LIKE ? OR model LIKE ? OR code LIKE ? OR spec LIKE ? OR brand LIKE ? OR barcode LIKE ?)';
+    args.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
   }
-  if (type) { sql += ' AND m.type=?'; args.push(type); }
-  sql += ' ORDER BY m.id DESC';
-  const rows = db.prepare(sql).all(...args);
+  if (type) { where += ' AND type=?'; args.push(type); }
+
+  // all=1 时不分页：单据录入的物料下拉框要拿到全部物料
+  let rows, page = null;
+  if (all === '1') {
+    rows = db.prepare('SELECT * FROM materials' + where + ' ORDER BY id DESC').all(...args);
+  } else {
+    const total = db.prepare('SELECT COUNT(*) AS n FROM materials' + where).get(...args).n;
+    const pg = clampPage(pageParams(ctx.query), total);
+    rows = db.prepare('SELECT * FROM materials' + where + ' ORDER BY id DESC LIMIT ? OFFSET ?')
+      .all(...args, pg.size, pg.offset);
+    page = pageMeta(total, pg);
+  }
 
   const showCost = ctx.can('cost.view');
   const list = rows.map(m => {
@@ -146,12 +175,26 @@ route('GET', '/api/materials', async (ctx) => {
       ...m, typeName: MATERIAL_TYPES[m.type] || m.type,
       stock_qty: stock.qty,
       roll_count: stock.rolls,
-      open_width: stock.openWidth
+      open_width: stock.openWidth,
+      sub_qty: stock.subQty
     };
     if (!showCost) { delete item.cost; }
     return item;
   });
-  return { list, types: MATERIAL_TYPES, creatableTypes: CREATABLE_TYPES, units: COMMON_UNITS };
+  return { list, page, types: MATERIAL_TYPES, creatableTypes: CREATABLE_TYPES, units: COMMON_UNITS };
+});
+
+route('GET', '/api/materials/:id', async (ctx) => {
+  ctx.need('material.view');
+  const id = Number(ctx.params.id);
+  const m = db.prepare('SELECT * FROM materials WHERE id=?').get(id);
+  if (!m) notFound('物料不存在');
+  const showCost = ctx.can('cost.view');
+  return {
+    ...m,
+    cost: showCost ? m.cost : undefined,
+    typeName: MATERIAL_TYPES[m.type] || m.type
+  };
 });
 
 route('POST', '/api/materials', async (ctx) => {
@@ -160,17 +203,22 @@ route('POST', '/api/materials', async (ctx) => {
   if (!b.name) bad('物料名称必填');
   if (!b.unit) bad('请选择计量单位');
   const type = b.type || 'normal';
-  if (!CREATABLE_TYPES[type]) bad('物料类型只能是不可分割或可分割母卷');
-  if (type === 'master' && !(Number(b.base_width) > 0)) bad('可分割母卷必须填写整支宽度（毫米）');
+  if (!CREATABLE_TYPES[type]) bad('请选择整进整出或整进零出');
+  if (type === 'master') {
+    if (!b.sub_unit) bad('整进零出物料必须填写零单位（如卷、米；胶带分切使用 mm）');
+    if (!(Number(b.base_width) > 0)) bad(`整进零出物料必须填写 1 ${b.unit} = 多少 ${b.sub_unit}`);
+  }
   const code = b.code || nextCode('materials', 'M');
   if (db.prepare('SELECT id FROM materials WHERE code=?').get(code)) bad('物料编号已存在');
-  const r = db.prepare(`INSERT INTO materials(code,name,brand,spec,unit,type,barcode,base_width,min_waste,cut_fee,parent_id,safety_stock,cost,batch_manage,status,created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`)
-    .run(code, b.name, b.brand || '', b.spec || '', b.unit, type, b.barcode || '',
-      Number(b.base_width) || null, Number(b.min_waste) || 10, Number(b.cut_fee) || 0,
+  const r = db.prepare(`INSERT INTO materials(code,name,model,model_edited,brand,spec,unit,sub_unit,type,barcode,base_width,min_waste,cut_fee,parent_id,safety_stock,cost,batch_manage,created_by,status,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`)
+    .run(code, b.name, b.model || '', 1, b.brand || '', b.spec || '', b.unit,
+      type === 'master' ? b.sub_unit : '', type, b.barcode || '',
+      type === 'master' ? Number(b.base_width) : null,
+      0, 0,   // 分切费与料头阈值已废弃，固定写 0
       b.parent_id || null, Number(b.safety_stock) || 0,
       0,  // 成本由入库单决定，新建物料时一律为 0
-      b.batch_manage ? 1 : 0, now());
+      b.batch_manage ? 1 : 0, ctx.user.userId, now());
   logAction(ctx, 'create', 'material', `新增物料 ${b.name}`);
   return { id: Number(r.lastInsertRowid), code };
 });
@@ -181,9 +229,10 @@ route('PUT', '/api/materials/:id', async (ctx) => {
   const m = db.prepare('SELECT * FROM materials WHERE id=?').get(id);
   if (!m) notFound('物料不存在');
   const b = ctx.body;
-  db.prepare(`UPDATE materials SET name=?,brand=?,spec=?,unit=?,barcode=?,base_width=?,min_waste=?,cut_fee=?,safety_stock=?,batch_manage=? WHERE id=?`)
-    .run(b.name ?? m.name, b.brand ?? m.brand, b.spec ?? m.spec, b.unit ?? m.unit, b.barcode ?? m.barcode,
-      b.base_width ?? m.base_width, b.min_waste ?? m.min_waste, b.cut_fee ?? m.cut_fee,
+  db.prepare(`UPDATE materials SET name=?,model=?,model_edited=1,brand=?,spec=?,unit=?,sub_unit=?,barcode=?,base_width=?,safety_stock=?,batch_manage=? WHERE id=?`)
+    .run(b.name ?? m.name, b.model ?? m.model ?? '', b.brand ?? m.brand, b.spec ?? m.spec, b.unit ?? m.unit,
+      b.sub_unit ?? m.sub_unit, b.barcode ?? m.barcode,
+      b.base_width ?? m.base_width,
       b.safety_stock ?? m.safety_stock, b.batch_manage ?? m.batch_manage, id);
   logAction(ctx, 'update', 'material', `编辑物料 ${m.name}`);
   return {};
@@ -258,28 +307,33 @@ route('DELETE', '/api/warehouses/:id', async (ctx) => {
 
 /* ==================== 工具函数 ==================== */
 function nextCode(table, prefix) {
-  const row = db.prepare(`SELECT code FROM ${table} WHERE code LIKE ? ORDER BY id DESC LIMIT 1`).get(`${prefix}%`);
-  let n = 1;
-  if (row) {
-    const num = parseInt(String(row.code).replace(prefix, ''), 10);
-    if (!isNaN(num)) n = num + 1;
+  // 只认 前缀+纯数字 的编号，手工改过的编号（如 MTEST123）不参与计算
+  const rows = db.prepare(`SELECT code FROM ${table} WHERE code LIKE ?`).all(`${prefix}%`);
+  let max = 0;
+  for (const r of rows) {
+    const tail = String(r.code).slice(prefix.length);
+    if (!/^\d+$/.test(tail)) continue;
+    const num = parseInt(tail, 10);
+    if (num > max) max = num;
   }
-  return prefix + String(n).padStart(4, '0');
+  return prefix + String(max + 1).padStart(4, '0');
 }
 
 function totalStock(materialId, warehouseId) {
   const m = db.prepare('SELECT * FROM materials WHERE id=?').get(materialId);
-  if (!m) return { qty: 0, rolls: 0, openWidth: 0 };
-  if (m.type === 'master') {
+  if (!m) return { qty: 0, rolls: 0, openWidth: 0, subQty: 0 };
+  // 胶带母卷（按 mm 分切）：查 rolls 表
+  if (m.type === 'master' && m.sub_unit === 'mm') {
     const rows = warehouseId
       ? db.prepare("SELECT * FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'").all(materialId, warehouseId)
       : db.prepare("SELECT * FROM rolls WHERE material_id=? AND status='open'").all(materialId);
-    return { rolls: rows.length, qty: rows.length, openWidth: rows.reduce((s, r) => s + (r.width_total - r.width_used), 0) };
+    return { rolls: rows.length, qty: rows.length, openWidth: rows.reduce((s, r) => s + (r.width_total - r.width_used), 0), subQty: 0 };
   }
+  // 箱装母卷或普通物料：查 inventory 表
   const row = warehouseId
-    ? db.prepare('SELECT qty FROM inventory WHERE material_id=? AND warehouse_id=?').get(materialId, warehouseId)
-    : db.prepare('SELECT SUM(qty) qty FROM inventory WHERE material_id=?').get(materialId);
-  return { qty: row?.qty || 0, rolls: 0, openWidth: 0 };
+    ? db.prepare('SELECT qty,sub_qty FROM inventory WHERE material_id=? AND warehouse_id=?').get(materialId, warehouseId)
+    : db.prepare('SELECT SUM(qty) qty, SUM(sub_qty) sub_qty FROM inventory WHERE material_id=?').get(materialId);
+  return { qty: row?.qty || 0, rolls: 0, openWidth: 0, subQty: row?.sub_qty || 0 };
 }
 
 /** 客户应收余额：出库总额 - 已收款（含退货冲减） */

@@ -1,0 +1,3 @@
+interface:
+  display_name: "重启服务"
+  short_description: "安全重启万楼进销存本机服务"
