@@ -38,6 +38,7 @@ table{width:100%;border-collapse:collapse}
 .login-field input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-s)}
 .login-btn{width:100%;background:var(--brand);color:#fff;padding:11px;border-radius:var(--r);font-size:14px;margin-top:8px}
 .login-btn:hover{background:var(--brand-d)}
+.login-btn:disabled{opacity:.55;cursor:not-allowed;background:var(--brand)}
 .login-tip{margin-top:24px;padding-top:18px;border-top:1px solid var(--line-2);font-size:12px;color:var(--faint);line-height:1.9}
 .login-err{background:var(--rust-s);color:var(--rust);padding:9px 12px;border-radius:var(--r);margin-bottom:14px;font-size:12.5px}
 

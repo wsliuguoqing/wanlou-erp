@@ -51,7 +51,8 @@ function route(method, pattern, handler, opts = {}) {
 }
 
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  // extra：附加字段（如登录锁定的 retryAfter 秒数），会一起返回给前端
+  constructor(status, message, extra) { super(message); this.status = status; Object.assign(this, extra); }
 }
 const bad = (msg) => { throw new HttpError(400, msg); };
 const notFound = (msg = '未找到') => { throw new HttpError(404, msg); };
@@ -152,7 +153,9 @@ function createServer() {
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 500;
       if (status >= 500) console.error('[500]', pathname, err);
-      send(res, status, { ok: false, message: err.message || '服务器错误' });
+      const payload = { ok: false, message: err.message || '服务器错误' };
+      if (err.retryAfter) payload.retryAfter = err.retryAfter;
+      send(res, status, payload);
     }
   });
 }

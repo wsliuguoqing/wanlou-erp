@@ -23,7 +23,11 @@ async function api(path, method = 'GET', body) {
   let json;
   try { json = await res.json(); } catch { throw new Error('服务器返回异常'); }
   if (res.status === 401) { logout(true); throw new Error('登录已过期，请重新登录'); }
-  if (!json.ok) throw new Error(json.message || '操作失败');
+  if (!json.ok) {
+    const err = new Error(json.message || '操作失败');
+    err.retryAfter = json.retryAfter; // 登录输错太多被锁时的剩余秒数
+    throw err;
+  }
   return json.data;
 }
 
@@ -245,7 +249,31 @@ function renderLogin(err, username, password) {
   </div>`;
 }
 
+/* 登录锁定倒计时：输错 3 次后按钮变灰，按秒数倒计时，到点自动恢复 */
+let loginLockTimer = null;
+
+function startLoginLock(sec) {
+  if (loginLockTimer) { clearInterval(loginLockTimer); loginLockTimer = null; }
+  let left = Math.max(1, Math.round(Number(sec) || 60));
+  const paint = () => {
+    const btn = document.querySelector('.login-btn');
+    const errEl = document.querySelector('.login-err');
+    if (left > 0) {
+      if (btn) { btn.disabled = true; btn.textContent = `请等待 ${left} 秒`; }
+      if (errEl) errEl.textContent = `密码连续输错 3 次，请 ${left} 秒后再试`;
+      left -= 1;
+      return;
+    }
+    clearInterval(loginLockTimer); loginLockTimer = null;
+    if (btn) { btn.disabled = false; btn.textContent = '登 录'; }
+    if (errEl) errEl.textContent = '现在可以重新登录了';
+  };
+  paint();
+  loginLockTimer = setInterval(paint, 1000);
+}
+
 async function doLogin() {
+  if (loginLockTimer) return; // 倒计时没走完，点了也不发请求
   const u = document.getElementById('lg-u').value.trim();
   const p = document.getElementById('lg-p').value;
   const rerender = msg => {
@@ -256,6 +284,7 @@ async function doLogin() {
   if (!u || !p) { rerender('请输入账号和密码'); return; }
   try {
     const d = await api('/auth/login', 'POST', { username: u, password: p });
+    if (loginLockTimer) { clearInterval(loginLockTimer); loginLockTimer = null; }
     App.token = d.token;
     App.user = d.user;
     localStorage.setItem('wl_token', d.token);
@@ -263,6 +292,7 @@ async function doLogin() {
     go('dashboard');
   } catch (e) {
     rerender(e.message);
+    if (e.retryAfter) startLoginLock(e.retryAfter);
   }
 }
 
