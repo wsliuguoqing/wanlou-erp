@@ -794,6 +794,28 @@ async function saveDoc(key, submit) {
   if (!d.warehouse_id) return toast('请选择仓库', 'err');
   if (!d.items.length) return toast('至少添加一行明细', 'err');
 
+  // 同一物料可能分成多行，先按物料合并本单需求，库存校验用合并后的量。
+  // 数量为 0 的行不占库存，跳过，也不计入「N 行合计」的行数。
+  const docNeed = new Map();
+  for (const it of d.items) {
+    if (!it.material_id) continue;
+    const m = Draft.materials.find(x => x.id === Number(it.material_id)) || {};
+    const q = itemQuantity(it, m);
+    if (q <= 0) continue;
+    const key = Number(it.material_id);
+    let agg = docNeed.get(key);
+    if (!agg) {
+      agg = { rows: 0, qty: 0, cutWidth: 0, wholeQty: 0 };
+      docNeed.set(key, agg);
+    }
+    const cw = Number(it.cut_width) || 0;
+    agg.rows += 1;
+    agg.qty += q;
+    if (cw > 0) agg.cutWidth += cw * q;
+    else agg.wholeQty += q;
+  }
+  const checkedMaterials = new Set();
+
   // 逐行校验：物料、数量、单价必填；整数限制；库存是否够
   for (let i = 0; i < d.items.length; i++) {
     const it = d.items[i];
@@ -818,34 +840,41 @@ async function saveDoc(key, submit) {
     }
     if (!(Number(it.price) > 0)) return toast(`第 ${no} 行「${m.name || ''}」单价必须填写`, 'err');
 
-    // 出库和采购退货要扣库存，提交前先核对
-    if (key === 'out' || key === 'pret') {
+    // 出库和采购退货要扣库存，提交前先核对（同一物料只报一次，用本单合计量）
+    if ((key === 'out' || key === 'pret') && !checkedMaterials.has(Number(it.material_id))) {
+      checkedMaterials.add(Number(it.material_id));
+      const agg = docNeed.get(Number(it.material_id)) || { rows: 1, qty: q, cutWidth: 0, wholeQty: q };
+      const rowNote = agg.rows > 1 ? `（本单 ${agg.rows} 行合计）` : '';
+
       // 胶带母卷（按 mm 分切）：比宽度或整支数
       if (m.type === 'master' && m.sub_unit === 'mm') {
         const cw = Number(it.cut_width) || 0;
-        if (cw > 0) {
-          if (m.base_width && cw > m.base_width) {
-            return toast(`「${m.name}」分切宽度 ${cw}mm 超过母卷宽度 ${m.base_width}mm`, 'err');
+        if (cw > 0 && m.base_width && cw > m.base_width) {
+          return toast(`「${m.name}」分切宽度 ${cw}mm 超过母卷宽度 ${m.base_width}mm`, 'err');
+        }
+        const wholeNeed = Math.round(agg.wholeQty);
+        if (wholeNeed > (Number(m.roll_count) || 0)) {
+          return toast(`「${m.name}」只有 ${m.roll_count || 0} 支整卷，不够出 ${wholeNeed} 支${rowNote}`, 'err');
+        }
+        if (agg.cutWidth > 0) {
+          // 本单先出掉的整支不能再用来分切
+          const availWidth = (Number(m.open_width) || 0) - wholeNeed * (Number(m.base_width) || 0);
+          if (agg.cutWidth > availWidth + 1e-6) {
+            return toast(`「${m.name}」可用宽度只有 ${qty(Math.max(0, availWidth))}mm，本单需要 ${qty(agg.cutWidth)}mm${rowNote}，库存不足`, 'err');
           }
-          const need = cw * q;
-          if (need > (Number(m.open_width) || 0)) {
-            return toast(`「${m.name}」可用宽度只有 ${qty(m.open_width || 0)}mm，本单需要 ${qty(need)}mm，库存不足`, 'err');
-          }
-        } else if (q > (Number(m.roll_count) || 0)) {
-          return toast(`「${m.name}」只有 ${m.roll_count || 0} 支整卷，不够出 ${q} 支`, 'err');
         }
       }
       // 箱装小卷：数量按最小单位（卷）算，可用 = 箱数 × 每箱卷数 + 散卷
       else if (m.type === 'master' && m.sub_unit) {
         const perBox = Number(m.base_width) || 1;
         const availTotal = (Number(m.stock_qty) || 0) * perBox + (Number(m.sub_qty) || 0);
-        if (q > availTotal) {
+        if (agg.qty > availTotal + 1e-9) {
           return toast(`「${m.name}」可用 ${qty(m.stock_qty || 0)} ${m.unit || ''}`
-            + ` + ${m.sub_qty || 0} ${m.sub_unit}（共 ${qty(availTotal)} ${m.sub_unit}），不够出 ${qty(q)} ${m.sub_unit}`, 'err');
+            + ` + ${m.sub_qty || 0} ${m.sub_unit}（共 ${qty(availTotal)} ${m.sub_unit}），不够出 ${qty(agg.qty)} ${m.sub_unit}${rowNote}`, 'err');
         }
       }
-      else if (q > (Number(m.stock_qty) || 0)) {
-        return toast(`「${m.name}」库存只有 ${qty(m.stock_qty || 0)} ${m.unit || ''}，不够出 ${qty(q)}`, 'err');
+      else if (agg.qty > (Number(m.stock_qty) || 0) + 1e-9) {
+        return toast(`「${m.name}」库存只有 ${qty(m.stock_qty || 0)} ${m.unit || ''}，不够出 ${qty(agg.qty)}${rowNote}`, 'err');
       }
     }
   }

@@ -388,6 +388,20 @@ function saveDoc(ctx, docId, type, submit) {
   });
 
   const status = submit ? 'pending' : 'draft';
+  // 写库和库存校验放在一个事务里：校验不过要整单回滚，
+  // 否则被拒绝的单据会留在「待审核」里继续占用库存。
+  db.exec('BEGIN');
+  try {
+    const id = writeDocAndCheck(ctx, docId, type, submit, b, meta, docDate, status, itemsPrepared);
+    db.exec('COMMIT');
+    return { id };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function writeDocAndCheck(ctx, docId, type, submit, b, meta, docDate, status, itemsPrepared) {
   let id = docId;
 
   if (!id) {
@@ -429,13 +443,13 @@ function saveDoc(ctx, docId, type, submit) {
 
     const needApproval = setting('need_approval', '1') === '1';
     if (!needApproval) {
-      approveDoc(ctx, id);
+      approveDoc(ctx, id, true); // 外层 saveDoc 已开事务
     }
   }
 
   logAction(ctx, docId ? 'update' : 'create', type.toLowerCase(),
     `${meta.name} ${db.prepare('SELECT sn FROM docs WHERE id=?').get(id).sn}`);
-  return { id };
+  return id;
 }
 
 /**
@@ -472,54 +486,104 @@ function checkStockEnough(type, warehouseId, items, excludeDocId) {
     }).join('、')}`
     : '';
 
+  // 同一张单里同一物料可能分成多行，必须先按物料合并本单需求，再跟库存比。
+  // 数量为 0 的行不占库存，直接跳过，也不计入「N 行合计」的行数。
+  const needByMaterial = new Map();
   for (const it of items) {
-    const mat = db.prepare('SELECT * FROM materials WHERE id=?').get(it.material_id);
+    const q = Number(it.qty) || 0;
+    if (q <= 0) continue;
+    const key = Number(it.material_id);
+    let agg = needByMaterial.get(key);
+    if (!agg) {
+      agg = { materialId: key, rows: 0, qty: 0, cutWidth: 0, wholeQty: 0, cutRows: [] };
+      needByMaterial.set(key, agg);
+    }
+    const cw = Number(it.cut_width) || 0;
+    agg.rows += 1;
+    agg.qty += q;
+    if (cw > 0) {
+      agg.cutWidth += cw * q;
+      agg.cutRows.push({ cutWidth: cw, qty: q });
+    } else {
+      agg.wholeQty += q;
+    }
+  }
+
+  for (const agg of needByMaterial.values()) {
+    const mat = db.prepare('SELECT * FROM materials WHERE id=?').get(agg.materialId);
     if (!mat) bad('物料不存在');
-    const hold = pendingHold.get(it.material_id) || { qty: 0, width: 0, docs: [] };
+    const hold = pendingHold.get(agg.materialId) || { qty: 0, width: 0, docs: [] };
+    const rowNote = agg.rows > 1 ? `（本单 ${agg.rows} 行合计）` : '';
 
     if (mat.type === 'master' && mat.sub_unit === 'mm') {
-      const openRolls = db.prepare("SELECT * FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'")
-        .all(it.material_id, warehouseId);
-      if (it.cut_width > 0) {
-        if (mat.base_width && it.cut_width > mat.base_width) {
-          bad(`${mat.name} 分切宽度 ${it.cut_width}mm 超过整支宽度 ${mat.base_width}mm`);
+      const openRolls = db.prepare("SELECT * FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open' ORDER BY id")
+        .all(agg.materialId, warehouseId);
+      for (const row of agg.cutRows) {
+        if (mat.base_width && row.cutWidth > mat.base_width) {
+          bad(`${mat.name} 分切宽度 ${row.cutWidth}mm 超过整支宽度 ${mat.base_width}mm`);
         }
-        const need = it.cut_width * it.qty;
-        const availRaw = openRolls.reduce((s, r) => s + (r.width_total - r.width_used), 0);
+      }
+      // 整支出库和分切都按 rolls 的 id 顺序取卷，所以被整支占掉的卷不能再算进可分切宽度
+      const wholeNeed = Math.round(agg.wholeQty);
+      const holdWhole = Math.round(hold.qty);
+      if (wholeNeed > 0) {
+        const availRolls = openRolls.length - holdWhole;
+        if (wholeNeed > availRolls) {
+          const holdNote = holdWhole > 0 ? `（其中 ${holdWhole} 支被其他待审核单据占用${holdSources(hold, '支')}）` : '';
+          bad(`${mat.name} 可用整支 ${Math.max(0, availRolls)} 支${holdNote}，本次需要 ${wholeNeed} 支${rowNote}`);
+        }
+      }
+      if (agg.cutWidth > 0) {
+        // 跳过被其他待审核单据和本单整支行占用的卷，再减去其他单据已分切的宽度
+        const availRaw = openRolls.slice(holdWhole + wholeNeed)
+          .reduce((s, r) => s + (r.width_total - r.width_used), 0);
         const avail = availRaw - hold.width;
-        if (need > avail + 1e-6) {
-          const holdNote = hold.width > 0 ? `（其中 ${round3(hold.width)}mm 被其他待审核单据占用${holdSources(hold, 'mm')}）` : '';
-          bad(`${mat.name} 可用宽度 ${round3(Math.max(0, avail))}mm${holdNote}，本次需要 ${round3(need)}mm，不足`);
-        }
-      } else {
-        const avail = openRolls.length - hold.qty;
-        if (it.qty > avail) {
-          const holdNote = hold.qty > 0 ? `（其中 ${hold.qty} 支被其他待审核单据占用${holdSources(hold, '支')}）` : '';
-          bad(`${mat.name} 可用整支 ${Math.max(0, avail)} 支${holdNote}，本次需要 ${round3(it.qty)} 支`);
+        if (agg.cutWidth > avail + 1e-6) {
+          const holdNote = (hold.width > 0 || holdWhole > 0)
+            ? `（其中 ${holdWhole} 支整支 + ${round3(hold.width)}mm 被其他待审核单据占用${holdSources(hold, 'mm')}）` : '';
+          const wholeNote = wholeNeed > 0 ? `（本单另有 ${wholeNeed} 支整支出库）` : '';
+          bad(`${mat.name} 可用宽度 ${round3(Math.max(0, avail))}mm${holdNote}${wholeNote}，本次需要 ${round3(agg.cutWidth)}mm${rowNote}，不足`);
         }
       }
     } else if (mat.type === 'master' && mat.sub_unit) {
       const inv = db.prepare('SELECT qty, sub_qty FROM inventory WHERE material_id=? AND warehouse_id=?')
-        .get(it.material_id, warehouseId) || { qty: 0, sub_qty: 0 };
+        .get(agg.materialId, warehouseId) || { qty: 0, sub_qty: 0 };
       const perBox = mat.base_width || 1;
-      const needLoose = roundSubQty(it.qty, mat);
-      const availTotal = (inv.qty || 0) * perBox + (inv.sub_qty || 0) - hold.qty;
-      if (needLoose > availTotal) {
+      const needLoose = roundSubQty(agg.qty, mat);
+      const availTotal = roundSubQty((inv.qty || 0) * perBox + (inv.sub_qty || 0) - hold.qty, mat);
+      if (needLoose > availTotal + 1e-9) {
         const holdNote = hold.qty > 0 ? `（其中 ${hold.qty} ${mat.sub_unit} 被其他待审核单据占用${holdSources(hold, mat.sub_unit)}）` : '';
-        bad(`${mat.name} 可用 ${inv.qty} ${mat.unit} + ${inv.sub_qty} ${mat.sub_unit}（共 ${availTotal} ${mat.sub_unit}）${holdNote}，本次需要 ${needLoose} ${mat.sub_unit}，不足`);
+        bad(`${mat.name} 可用 ${inv.qty} ${mat.unit} + ${inv.sub_qty} ${mat.sub_unit}（共 ${availTotal} ${mat.sub_unit}）${holdNote}，本次需要 ${needLoose} ${mat.sub_unit}${rowNote}，不足`);
       }
     } else {
-      const avail = invGet(it.material_id, warehouseId) - hold.qty;
-      if (it.qty > avail + 1e-9) {
+      const avail = invGet(agg.materialId, warehouseId) - hold.qty;
+      if (agg.qty > avail + 1e-9) {
         const holdNote = hold.qty > 0 ? `（其中 ${round3(hold.qty)} 被其他待审核单据占用${holdSources(hold, mat.unit)}）` : '';
-        bad(`${mat.name} 可用库存 ${round3(Math.max(0, avail))} ${mat.unit || ''}${holdNote}，本次需要 ${round3(it.qty)}，不足`);
+        bad(`${mat.name} 可用库存 ${round3(Math.max(0, avail))} ${mat.unit || ''}${holdNote}，本次需要 ${round3(agg.qty)}${rowNote}，不足`);
       }
     }
   }
 }
 
-/* ---------------- 审批通过：执行库存变动 ---------------- */
-function approveDoc(ctx, docId) {
+/* ---------------- 审批通过：执行库存变动 ----------------
+ * 库存变动是逐行执行的，中途某一行扣不动就必须整单回滚，
+ * 否则前面几行已经扣掉的库存会凭空消失（单据还停在待审核或被驳回，库存却少了）。
+ * saveDoc 在「无需审批」时会调用本函数，那时外层已经开了事务，用 inTx 标记避免嵌套。
+ */
+function approveDoc(ctx, docId, inTx) {
+  if (inTx) return approveDocInner(ctx, docId);
+  db.exec('BEGIN');
+  try {
+    const r = approveDocInner(ctx, docId);
+    db.exec('COMMIT');
+    return r;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function approveDocInner(ctx, docId) {
   const doc = db.prepare('SELECT * FROM docs WHERE id=?').get(docId);
   if (!doc) notFound('单据不存在');
   if (doc.status !== 'pending') bad('只有待审核的单据可以审核');
@@ -767,6 +831,43 @@ function approveDoc(ctx, docId) {
   logAction(ctx, 'approve', doc.type.toLowerCase(), `审核通过 ${doc.sn}`);
 }
 
+/**
+ * 把一张单据已产生的库存变动按 stock_effects 原样退回。
+ * 作废已审核单据用它；驳回时发现残留变动（历史脏数据）也用它。
+ * 退完清掉 effects，避免同一笔被回滚两次。
+ */
+function revertStockEffects(ctx, doc, remark) {
+  const effects = db.prepare('SELECT * FROM stock_effects WHERE doc_id=?').all(doc.id);
+  for (const e of effects) {
+    if (e.kind === 'inv') {
+      const before = invGet(e.material_id, e.warehouse_id);
+      const after = before - e.qty_delta;
+      invSet(e.material_id, e.warehouse_id, round3(after));
+      writeLog({ materialId: e.material_id, warehouseId: e.warehouse_id, docType: 'VOID', docSn: doc.sn,
+        delta: -e.qty_delta, before, after, cost: e.cost, amount: Math.abs(e.qty_delta) * (e.cost || 0),
+        remark, operatorId: ctx.user.userId });
+    } else if (e.kind === 'subqty') {
+      const mat = db.prepare('SELECT * FROM materials WHERE id=?').get(e.material_id);
+      const stock = adjustPackStock(e.material_id, e.warehouse_id, -e.qty_delta, mat);
+      writeLog({ materialId: e.material_id, warehouseId: e.warehouse_id, docType: 'VOID', docSn: doc.sn,
+        delta: -e.qty_delta, before: stock.before, after: stock.after, cost: e.cost,
+        amount: Math.abs(e.qty_delta) * (e.cost || 0), remark, operatorId: ctx.user.userId });
+    } else if (e.kind === 'roll_create') {
+      db.prepare('DELETE FROM rolls WHERE id=?').run(e.ref_id);
+    } else if (e.kind === 'roll_consume') {
+      const roll = db.prepare('SELECT * FROM rolls WHERE id=?').get(e.ref_id);
+      if (roll) {
+        const newUsed = Math.max(0, roll.width_used + e.width_delta); // width_delta 是负值
+        const leftover = roll.width_total - newUsed;
+        const status = leftover >= (db.prepare('SELECT min_waste FROM materials WHERE id=?').get(e.material_id)?.min_waste ?? 10)
+          ? 'open' : (leftover <= 1e-9 ? 'used' : 'waste');
+        db.prepare('UPDATE rolls SET width_used=?, status=? WHERE id=?').run(round3(newUsed), status, roll.id);
+      }
+    }
+  }
+  db.prepare('DELETE FROM stock_effects WHERE doc_id=?').run(doc.id);
+}
+
 /** 根据已退数量，标记原单为部分退货或全部退货 */
 function syncOriginReturnStatus(originId, retType) {
   const origin = db.prepare('SELECT * FROM docs WHERE id=?').get(originId);
@@ -800,40 +901,21 @@ function voidDoc(ctx, docId) {
     return {};
   }
 
-  const effects = db.prepare('SELECT * FROM stock_effects WHERE doc_id=?').all(docId);
-  for (const e of effects) {
-    if (e.kind === 'inv') {
-      const before = invGet(e.material_id, e.warehouse_id);
-      const after = before - e.qty_delta;
-      invSet(e.material_id, e.warehouse_id, round3(after));
-      writeLog({ materialId: e.material_id, warehouseId: e.warehouse_id, docType: 'VOID', docSn: doc.sn,
-        delta: -e.qty_delta, before, after, cost: e.cost, amount: Math.abs(e.qty_delta) * (e.cost || 0),
-        remark: '单据作废回滚', operatorId: ctx.user.userId });
-    } else if (e.kind === 'subqty') {
-      const mat = db.prepare('SELECT * FROM materials WHERE id=?').get(e.material_id);
-      const stock = adjustPackStock(e.material_id, e.warehouse_id, -e.qty_delta, mat);
-      writeLog({ materialId: e.material_id, warehouseId: e.warehouse_id, docType: 'VOID', docSn: doc.sn,
-        delta: -e.qty_delta, before: stock.before, after: stock.after, cost: e.cost,
-        amount: Math.abs(e.qty_delta) * (e.cost || 0), remark: '整进零出库存回滚', operatorId: ctx.user.userId });
-    } else if (e.kind === 'roll_create') {
-      db.prepare('DELETE FROM rolls WHERE id=?').run(e.ref_id);
-    } else if (e.kind === 'roll_consume') {
-      const roll = db.prepare('SELECT * FROM rolls WHERE id=?').get(e.ref_id);
-      if (roll) {
-        const newUsed = Math.max(0, roll.width_used + e.width_delta); // width_delta 是负值
-        const leftover = roll.width_total - newUsed;
-        const status = leftover >= (db.prepare('SELECT min_waste FROM materials WHERE id=?').get(e.material_id)?.min_waste ?? 10)
-          ? 'open' : (leftover <= 1e-9 ? 'used' : 'waste');
-        db.prepare('UPDATE rolls SET width_used=?, status=? WHERE id=?').run(round3(newUsed), status, roll.id);
-      }
-    }
-  }
-  db.prepare("UPDATE docs SET status='void', void_reason=? WHERE id=?")
-    .run(ctx.body.reason || '', docId);
+  // 回滚也要整体成功或整体不动，中途失败不能留半截库存
+  db.exec('BEGIN');
+  try {
+    revertStockEffects(ctx, doc, '单据作废回滚');
+    db.prepare("UPDATE docs SET status='void', void_reason=? WHERE id=?")
+      .run(ctx.body.reason || '', docId);
 
-  // 作废退货单后，原单的退货状态要跟着回退
-  if ((doc.type === 'SRET' || doc.type === 'PRET') && doc.origin_doc_id) {
-    syncOriginReturnStatus(doc.origin_doc_id, doc.type);
+    // 作废退货单后，原单的退货状态要跟着回退
+    if ((doc.type === 'SRET' || doc.type === 'PRET') && doc.origin_doc_id) {
+      syncOriginReturnStatus(doc.origin_doc_id, doc.type);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
   }
 
   logAction(ctx, 'void', doc.type.toLowerCase(), `作废单据 ${doc.sn}，库存已回滚`);
@@ -967,6 +1049,11 @@ route('POST', '/api/docs/:id/submit', async (ctx) => {
   const meta = DOC_META[doc.type];
   ctx.need(meta.create);
   if (ctx.user.role === 'sales' && doc.created_by !== ctx.user.userId) forbidden('只能提交自己的单据');
+
+  // 草稿走这个接口提交时同样要校验库存，不能只在新建/编辑页面校验
+  const items = db.prepare('SELECT * FROM doc_items WHERE doc_id=?').all(id);
+  checkStockEnough(doc.type, doc.warehouse_id, items, id);
+
   db.prepare("UPDATE docs SET status='pending', submitted_at=? WHERE id=?").run(now(), id);
   logAction(ctx, 'submit', doc.type.toLowerCase(), `提交审核 ${doc.sn}`);
   return {};
@@ -986,9 +1073,22 @@ route('POST', '/api/docs/:id/reject', async (ctx) => {
   if (doc.status !== 'pending') bad('只有待审核的单据可以驳回');
   if (ctx.user.role !== 'admin' && ctx.user.role !== 'manager') forbidden('只有主管或超级管理员可以驳回');
   if (!ctx.body.reason) bad('请填写驳回原因');
-  db.prepare("UPDATE docs SET status='rejected', audited_by=?, audited_at=?, audit_reason=? WHERE id=?")
-    .run(ctx.user.userId, now(), ctx.body.reason, id);
-  logAction(ctx, 'reject', doc.type.toLowerCase(), `驳回 ${doc.sn}：${ctx.body.reason}`);
+
+  // 待审核的单据不该有库存变动。若有，说明是历史脏数据（审核中途失败且未回滚），
+  // 驳回时一并回滚，避免库存被这张单一直吃掉。
+  const leftover = db.prepare('SELECT COUNT(*) c FROM stock_effects WHERE doc_id=?').get(id).c;
+  db.exec('BEGIN');
+  try {
+    if (leftover > 0) revertStockEffects(ctx, doc, '驳回回滚');
+    db.prepare("UPDATE docs SET status='rejected', audited_by=?, audited_at=?, audit_reason=? WHERE id=?")
+      .run(ctx.user.userId, now(), ctx.body.reason, id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  logAction(ctx, 'reject', doc.type.toLowerCase(),
+    `驳回 ${doc.sn}：${ctx.body.reason}${leftover > 0 ? '（并回滚残留库存变动）' : ''}`);
   return {};
 });
 
