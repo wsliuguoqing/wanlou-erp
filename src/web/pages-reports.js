@@ -106,10 +106,10 @@ page('carryover', () => {
         <option value="0" ${RepState.coFilter?.invoice_status === '0' ? 'selected' : ''}>未开票</option>
         <option value="1" ${RepState.coFilter?.invoice_status === '1' ? 'selected' : ''}>已开票</option>
       </select>
-      <button class="btn primary" onclick="loadCarryover()">查询</button>
+      <button class="btn primary" onclick="loadCarryover(true)">查询</button>
       <button class="btn" onclick="resetCarryover()">清空</button>
       <div class="spacer"></div>
-      <button class="btn" onclick="exportTable('carryover-table','待结转库存清单')">导出 Excel</button>
+      <button class="btn" onclick="exportCarryover()">导出 Excel</button>
     </div>
     <div class="stats">
       <div class="stat"><div class="stat-label">不含税销售额</div><div class="stat-val">${money(s.amount)}</div></div>
@@ -122,11 +122,43 @@ page('carryover', () => {
       { label: '出库单号' }, { label: '日期' }, { label: '客户' }, { label: '销售员' },
       { label: '销售额', r: 1 }, { label: '成本', r: 1 }, { label: '毛利', r: 1 }, { label: '毛利率', r: 1 }, { label: '开票' }
     ], rows, '所选期间没有已审核的出库单')}
-    </div>`;
+    </div>
+    ${pagerBar('carryover', d.page, 'loadCarryover', '张')}`;
 });
 page('carryover').afterRender = () => loadCarryover();
 
-async function loadCarryover() {
+/** 导出走接口取全量，不受当前页码限制 */
+async function exportCarryover() {
+  const qs = new URLSearchParams({ ...(RepState.coFilter || {}), all: '1' });
+  try {
+    const d = await api(`/reports/carryover?${qs}`);
+    const head = ['出库单号', '日期', '客户', '销售员', '销售额', '成本', '毛利', '毛利率', '开票'];
+    const lines = [head.map(v => `"${v}"`).join(',')];
+    for (const r of d.list) {
+      lines.push([r.sn, r.doc_date, r.customer_name || '', r.salesperson_name || '',
+        r.total_amount, r.total_cost, r.profit, r.margin,
+        r.invoice_status ? '已开票' : '未开票']
+        .map(v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`).join(','));
+    }
+    const s = d.summary || {};
+    lines.push(['合计', '', '', '', s.amount, s.cost, s.profit, s.margin, '']
+      .map(v => `"${String(v == null ? '' : v)}"`).join(','));
+    downloadCsv('待结转库存清单', lines);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function downloadCsv(filename, lines) {
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${filename}_${todayStr()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('已导出，可用 Excel 打开', 'ok');
+}
+
+async function loadCarryover(reset) {
+  if (reset) pgState('carryover').page = 1;
   // 首次进入时把客户和销售员选项load出来
   if (!RepState.coCustomers) {
     try {
@@ -153,6 +185,9 @@ async function loadCarryover() {
   RepState.coFilter = f;
 
   const qs = new URLSearchParams(f);
+  const pg = pgState('carryover');
+  qs.set('page', pg.page);
+  qs.set('size', pg.size);
   try {
     RepState.carryover = await api(`/reports/carryover?${qs}`);
     if (App.route === 'carryover') document.getElementById('page').innerHTML = PAGES.carryover();
@@ -162,7 +197,7 @@ async function loadCarryover() {
 function resetCarryover() {
   RepState.coFilter = { from: monthStart(), to: todayStr(), customer_id: '', salesperson_id: '', invoice_status: '' };
   if (App.route === 'carryover') document.getElementById('page').innerHTML = PAGES.carryover();
-  loadCarryover();
+  loadCarryover(true);
 }
 
 /* ==================== 进销存汇总 ==================== */

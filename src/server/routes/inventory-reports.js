@@ -155,47 +155,62 @@ route('GET', '/api/inventory/rolls', async (ctx) => {
 /* ==================== 报表：待结转库存清单（利润表） ==================== */
 route('GET', '/api/reports/carryover', async (ctx) => {
   ctx.need('report.carryover');
-  const { from = '', to = '', customer_id = '', salesperson_id = '', invoice_status = '' } = ctx.query;
-  let sql = `SELECT d.id, d.sn, d.doc_date, d.contract_sn, d.total_amount, d.total_cost,
-                    d.invoice_status, d.paid_amount, d.pay_status,
-                    c.name AS customer_name, u.name AS salesperson_name
-             FROM docs d
-             LEFT JOIN customers c ON c.id=d.partner_id
-             LEFT JOIN users u ON u.id=d.salesperson_id
-             WHERE d.type='OUT' AND d.status='approved'`;
+  const { from = '', to = '', customer_id = '', salesperson_id = '', invoice_status = '', all = '' } = ctx.query;
+
+  // 筛选条件单独攒，列表和合计共用同一套，避免两处口径写岔
+  let where = ` WHERE d.type='OUT' AND d.status='approved'`;
   const args = [];
-  if (from) { sql += ' AND d.doc_date >= ?'; args.push(from); }
-  if (to) { sql += ' AND d.doc_date <= ?'; args.push(to); }
-  if (customer_id) { sql += ' AND d.partner_id = ?'; args.push(Number(customer_id)); }
-  if (salesperson_id) { sql += ' AND d.salesperson_id = ?'; args.push(Number(salesperson_id)); }
-  if (invoice_status !== '') { sql += ' AND d.invoice_status = ?'; args.push(Number(invoice_status)); }
-  if (ctx.user.role === 'sales') { sql += ' AND d.salesperson_id = ?'; args.push(ctx.user.userId); }
-  sql += ' ORDER BY d.doc_date DESC, d.id DESC';
-  const rows = db.prepare(sql).all(...args);
+  if (from) { where += ' AND d.doc_date >= ?'; args.push(from); }
+  if (to) { where += ' AND d.doc_date <= ?'; args.push(to); }
+  if (customer_id) { where += ' AND d.partner_id = ?'; args.push(Number(customer_id)); }
+  if (salesperson_id) { where += ' AND d.salesperson_id = ?'; args.push(Number(salesperson_id)); }
+  if (invoice_status !== '') { where += ' AND d.invoice_status = ?'; args.push(Number(invoice_status)); }
+  if (ctx.user.role === 'sales') { where += ' AND d.salesperson_id = ?'; args.push(ctx.user.userId); }
+
+  // 合计用 SQL 聚合算全量，不跟着分页走
+  const agg = db.prepare(`SELECT COUNT(*) n,
+                                 COALESCE(SUM(d.total_amount),0) amount,
+                                 COALESCE(SUM(d.total_cost),0) cost
+                          FROM docs d${where}`).get(...args);
+  const total = agg.n;
+  const profit = round2(agg.amount - agg.cost);
+
+  const sql = `SELECT d.id, d.sn, d.doc_date, d.contract_sn, d.total_amount, d.total_cost,
+                      d.invoice_status, d.paid_amount, d.pay_status,
+                      c.name AS customer_name, u.name AS salesperson_name
+               FROM docs d
+               LEFT JOIN customers c ON c.id=d.partner_id
+               LEFT JOIN users u ON u.id=d.salesperson_id
+               ${where} ORDER BY d.doc_date DESC, d.id DESC`;
+
+  let rows, page = null;
+  if (all === '1') {
+    rows = db.prepare(sql).all(...args);
+  } else {
+    const pg = clampPage(pageParams(ctx.query), total);
+    rows = db.prepare(sql + ' LIMIT ? OFFSET ?').all(...args, pg.size, pg.offset);
+    page = pageMeta(total, pg);
+  }
 
   const list = rows.map(r => {
-    const profit = round2((r.total_amount || 0) - (r.total_cost || 0));
-    const rate = r.total_amount > 0 ? round4(profit / r.total_amount) : 0;
+    const p = round2((r.total_amount || 0) - (r.total_cost || 0));
+    const rate = r.total_amount > 0 ? round4(p / r.total_amount) : 0;
     return {
       ...r,
-      profit, margin: (rate * 100).toFixed(2) + '%',
+      profit: p, margin: (rate * 100).toFixed(2) + '%',
       invoice_text: r.invoice_status === 0 ? '否' : '是'
     };
   });
 
-  const sum = list.reduce((a, r) => ({
-    amount: a.amount + (r.total_amount || 0),
-    cost: a.cost + (r.total_cost || 0),
-    profit: a.profit + r.profit
-  }), { amount: 0, cost: 0, profit: 0 });
-
   return {
     list,
+    page,
+    total,
     summary: {
-      amount: round2(sum.amount),
-      cost: round2(sum.cost),
-      profit: round2(sum.profit),
-      margin: sum.amount > 0 ? ((sum.profit / sum.amount) * 100).toFixed(2) + '%' : '0.00%'
+      amount: round2(agg.amount),
+      cost: round2(agg.cost),
+      profit,
+      margin: agg.amount > 0 ? ((profit / agg.amount) * 100).toFixed(2) + '%' : '0.00%'
     }
   };
 });

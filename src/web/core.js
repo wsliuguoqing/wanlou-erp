@@ -350,9 +350,23 @@ function pgQuery(key) {
   const s = pgState(key);
   return `page=${s.page}&size=${s.size}`;
 }
+/** 分页按钮要把 loader 拼进 onclick 字符串，函数没法直接塞，
+ *  这里登记成短名字，点按钮时再取回来调用。 */
+const Loaders = {};
+let loaderSeq = 0;
+function loaderRef(loader) {
+  if (typeof loader !== 'function') return loader;
+  const id = 'ld' + (++loaderSeq);
+  Loaders[id] = loader;
+  return id;
+}
 function callLoader(loader) {
-  const fn = typeof loader === 'string' ? window[loader] : loader;
-  if (typeof fn === 'function') return fn();
+  if (typeof loader === 'function') return loader();
+  if (typeof loader === 'string') {
+    if (Loaders[loader]) return Loaders[loader]();
+    const fn = window[loader];
+    if (typeof fn === 'function') return fn();
+  }
 }
 function pgGo(key, loader, page) {
   const s = pgState(key);
@@ -372,8 +386,9 @@ function pgSize(key, loader, el) {
 /** 分页条：首页/上一页/下一页/末页 + 跳页 + 每页条数 */
 function pagerBar(key, meta, loader, unit = '条') {
   if (!meta || !meta.total) return '';
+  const ref = loaderRef(loader);
   const btn = (label, page, off) =>
-    `<button class="btn sm" ${off ? 'disabled' : ''} onclick="pgGo('${key}','${loader}',${page})">${label}</button>`;
+    `<button class="btn sm" ${off ? 'disabled' : ''} onclick="pgGo('${key}','${ref}',${page})">${label}</button>`;
   return `<div class="pager">
     <span class="hint">共 ${meta.total} ${unit}，第 <b>${meta.page}</b> / ${meta.pages} 页</span>
     ${btn('首页', 1, meta.page <= 1)}${btn('上一页', meta.page - 1, meta.page <= 1)}
@@ -381,10 +396,10 @@ function pagerBar(key, meta, loader, unit = '条') {
     <span class="spacer"></span>
     <span class="hint">跳到</span>
     <input class="inp num pg-jump" type="number" min="1" max="${meta.pages}" value="${meta.page}"
-      onchange="pgGo('${key}','${loader}',this.value)">
+      onchange="pgGo('${key}','${ref}',this.value)">
     <span class="hint">页，每页</span>
     <input class="inp num pg-size" type="number" min="1" max="500" value="${meta.size}"
-      onchange="pgSize('${key}','${loader}',this)">
+      onchange="pgSize('${key}','${ref}',this)">
     <span class="hint">条</span>
   </div>`;
 }

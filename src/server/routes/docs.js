@@ -40,9 +40,14 @@ function setting(key, def = '') {
 }
 
 /* ---------------- 单号 ---------------- */
-function makeSn(type, salespersonId) {
+/**
+ * 单号里的日期用「单据日期」，不是开单当天。
+ * 补录历史单据时（比如现在补 2025 年 1 月的单），单号要跟单据日期一致，
+ * 否则单号写着 20261030、单据日期是 2025-01-05，对账时对不上。
+ */
+function makeSn(type, salespersonId, docDate) {
   const meta = DOC_META[type];
-  const day = today().replace(/-/g, '');
+  const day = String(docDate || today()).slice(0, 10).replace(/-/g, '');
   let prefix;
   if (type === 'OUT') {
     const employeeNo = String(db.prepare('SELECT employee_no FROM users WHERE id=?').get(salespersonId)?.employee_no || '').trim();
@@ -144,6 +149,9 @@ function createRolls({ docId, materialId, warehouseId, count, unitCost, batchNo 
 function consumeRollWidth({ docId, materialId, warehouseId, needWidth, operatorId, docSn }) {
   let remain = needWidth;
   let totalCost = 0;
+  const openBefore = db.prepare("SELECT COUNT(*) c FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'")
+    .get(materialId, warehouseId).c;
+  let closed = 0; // 本次分切把几支卷切完了
   const rolls = db.prepare("SELECT * FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open' ORDER BY id")
     .all(materialId, warehouseId);
   for (const roll of rolls) {
@@ -155,19 +163,26 @@ function consumeRollWidth({ docId, materialId, warehouseId, needWidth, operatorI
     const leftover = roll.width_total - newUsed;
     const minWaste = db.prepare('SELECT min_waste FROM materials WHERE id=?').get(materialId)?.min_waste ?? 10;
     const status = leftover <= 1e-9 ? 'used' : (leftover < minWaste ? 'waste' : 'open');
+    if (status !== 'open') closed += 1;
     db.prepare('UPDATE rolls SET width_used=?, status=? WHERE id=?').run(round3(newUsed), status, roll.id);
     totalCost += (take / roll.width_total) * roll.cost;
     db.prepare('INSERT INTO stock_effects(doc_id,kind,material_id,warehouse_id,ref_id,width_delta,cost) VALUES (?,?,?,?,?,?,?)')
       .run(docId, 'roll_consume', materialId, warehouseId, roll.id, -take, (take / roll.width_total) * roll.cost);
-    writeLog({
-      materialId, warehouseId, docType: 'OUT', docSn, delta: -take / roll.width_total,
-      before: avail / roll.width_total, after: leftover / roll.width_total,
-      cost: roll.cost, amount: (take / roll.width_total) * roll.cost,
-      remark: `分切 ${take}mm${status === 'waste' ? '（产生料头）' : ''}`, operatorId
-    });
     remain -= take;
   }
   if (remain > 1e-6) bad('母卷可用宽度不足');
+
+  // 分切只是消耗宽度，不把整支拿走：支数只有当某支被切完（变成 used / 料头）时才减 1。
+  // 以前按「切走的宽度占总宽的比例」记成 -0.083 支，单位是支却带小数，
+  // 既看不懂，也让按流水汇总的支数和实际在库对不上。
+  writeLog({
+    materialId, warehouseId, docType: 'OUT', docSn,
+    delta: -closed,
+    before: openBefore, after: openBefore - closed,
+    cost: closed ? round4(totalCost / closed) : 0, amount: round2(totalCost),
+    remark: `分切占用 ${round3(needWidth)}mm${closed ? `，切完 ${closed} 支` : '，支数不变'}`,
+    operatorId
+  });
   return totalCost;
 }
 
@@ -405,7 +420,7 @@ function writeDocAndCheck(ctx, docId, type, submit, b, meta, docDate, status, it
   let id = docId;
 
   if (!id) {
-    const sn = makeSn(type, b.salesperson_id || ctx.user.userId);
+    const sn = makeSn(type, b.salesperson_id || ctx.user.userId, docDate);
     const r = db.prepare(`INSERT INTO docs(type,sn,doc_date,partner_id,warehouse_id,contract_sn,salesperson_id,status,
         total_amount,total_cost,invoice_status,carrier,receiver,receiver_phone,receiver_addr,remark,source_doc_id,
         origin_doc_id,created_by,created_at,submitted_at)
@@ -656,6 +671,10 @@ function approveDocInner(ctx, docId) {
         pushEffect('inv', null, it.qty, 0, it.price);
         totalCost += it.amount;
       }
+      // 入库明细的成本快照 = 本行采购价（入库单新建时物料成本还是 0，
+      // 不在这里回填的话，入库单明细的成本列永远是 0，导出 Excel 也带 0 出去）
+      db.prepare('UPDATE doc_items SET cost_price=?, cost_amount=? WHERE id=?')
+        .run(round4(it.qty > 0 ? it.amount / it.qty : 0), round2(it.amount), it.id);
     }
 
     else if (doc.type === 'OUT') {
@@ -838,6 +857,10 @@ function approveDocInner(ctx, docId) {
  */
 function revertStockEffects(ctx, doc, remark) {
   const effects = db.prepare('SELECT * FROM stock_effects WHERE doc_id=?').all(doc.id);
+  // 母卷回滚要按物料汇总，回滚完再补一条 VOID 流水：
+  // 否则宽度退回去了、支数也变回 open，流水里却没有对应的 +1，
+  // 按流水汇总的支数就会比实际在库少。
+  const rollGroups = new Map();
   for (const e of effects) {
     if (e.kind === 'inv') {
       const before = invGet(e.material_id, e.warehouse_id);
@@ -862,8 +885,29 @@ function revertStockEffects(ctx, doc, remark) {
         const status = leftover >= (db.prepare('SELECT min_waste FROM materials WHERE id=?').get(e.material_id)?.min_waste ?? 10)
           ? 'open' : (leftover <= 1e-9 ? 'used' : 'waste');
         db.prepare('UPDATE rolls SET width_used=?, status=? WHERE id=?').run(round3(newUsed), status, roll.id);
+        const gk = `${e.material_id}|${e.warehouse_id}`;
+        const g = rollGroups.get(gk) || { materialId: e.material_id, warehouseId: e.warehouse_id, cost: 0 };
+        g.cost += Number(e.cost) || 0;
+        rollGroups.set(gk, g);
       }
     }
+  }
+  // 母卷：按原出库流水的支数变动反向补一条，保证流水合计 = 在库支数
+  for (const g of rollGroups.values()) {
+    const orig = db.prepare(`SELECT COALESCE(SUM(qty_change),0) d, COUNT(*) n FROM inventory_logs
+                             WHERE doc_sn=? AND material_id=? AND warehouse_id=? AND doc_type='OUT'`)
+      .get(doc.sn, g.materialId, g.warehouseId);
+    if (!orig.n) continue;
+    const before = db.prepare("SELECT COUNT(*) c FROM rolls WHERE material_id=? AND warehouse_id=? AND status='open'")
+      .get(g.materialId, g.warehouseId).c;
+    const delta = -Number(orig.d);
+    writeLog({
+      materialId: g.materialId, warehouseId: g.warehouseId, docType: 'VOID', docSn: doc.sn,
+      delta, before, after: before + delta,
+      cost: round4(g.cost), amount: round2(g.cost),
+      remark: `${remark}（母卷支数回滚${delta ? ` ${delta > 0 ? '+' : ''}${round3(delta)} 支` : '，支数不变'}）`,
+      operatorId: ctx.user.userId
+    });
   }
   db.prepare('DELETE FROM stock_effects WHERE doc_id=?').run(doc.id);
 }

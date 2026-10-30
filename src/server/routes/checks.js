@@ -35,9 +35,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS stock_check_items (
   remark TEXT
 )`);
 
-function makeSn() {
+function makeSn(checkDate) {
   const prefix = db.prepare("SELECT value FROM settings WHERE key='sn_prefix_CHECK'").get()?.value || 'PD';
-  const day = today().replace(/-/g, '');
+  const day = String(checkDate || today()).slice(0, 10).replace(/-/g, '');
   const row = db.prepare('SELECT sn FROM stock_checks WHERE sn LIKE ? ORDER BY id DESC LIMIT 1').get(`${prefix}${day}%`);
   let n = 1;
   if (row) {
@@ -109,7 +109,7 @@ route('POST', '/api/checks', async (ctx) => {
   const wh = db.prepare('SELECT * FROM warehouses WHERE id=?').get(b.warehouse_id);
   if (!wh) bad('仓库不存在');
 
-  const sn = makeSn();
+  const sn = makeSn(b.check_date);
   const r = db.prepare(`INSERT INTO stock_checks(sn,check_date,warehouse_id,status,remark,created_by,created_at)
                         VALUES (?,?,?,'draft',?,?,?)`)
     .run(sn, b.check_date || today(), b.warehouse_id, b.remark || '', ctx.user.userId, now());

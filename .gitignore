@@ -12,6 +12,9 @@ data/*.bak
 data/*.bak-*
 data/backup/
 
+# 客户实际在用的名单/单据，属于业务数据，不入库
+data/templates/待导入供应商.xlsx
+
 # 临时调试产物（脚本、临时库、导出的 xlsx）
 .tmp-*/
 .tmp*
