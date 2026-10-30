@@ -74,7 +74,9 @@ async function waitReady(ms = 15000) {
     }
     ok(true, '测试服务已启动');
 
-    token = (await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' })).token;
+    // 登录要带图形验证码，交给 login-helper 自动识别
+    const { loginToken } = require('./login-helper');
+    token = await loginToken(BASE, 'admin', 'admin123');
     ok(true, '拿到登录令牌');
 
     /* ---------- 准备基础资料 ---------- */

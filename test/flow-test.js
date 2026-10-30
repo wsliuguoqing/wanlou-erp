@@ -4,6 +4,7 @@
  * 用法：node test/flow-test.js
  */
 const BASE = process.env.TEST_BASE || 'http://127.0.0.1:3000';
+const { loginRaw } = require('./login-helper');
 let token = '';
 
 async function api(path, method = 'GET', body) {
@@ -31,8 +32,10 @@ function assert(cond, msg) {
 (async () => {
   console.log('\n========== 万楼进销存 端到端测试 ==========\n');
 
-  /* 1. 登录 */
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
+  /* 1. 登录（现在要带图形验证码，用 login-helper 自动识别） */
+  const lr = await loginRaw(BASE, 'admin', 'admin123');
+  if (!lr.json.ok) throw new Error('登录失败：' + lr.json.message);
+  const login = lr.json.data;
   token = login.token;
   log('超管登录', login.user);
   const adminId = login.user.id;
@@ -314,8 +317,9 @@ function assert(cond, msg) {
   } catch (e) { duplicateEmployeeNo = /工号/.test(e.message); }
   assert(duplicateEmployeeNo, '员工工号不可重复');
   const savedToken = token;
-  const login2 = await api('/api/auth/login', 'POST', { username: salesName, password: 'sales123' });
-  token = login2.token;
+  const login2 = await loginRaw(BASE, salesName, 'sales123');
+  if (!login2.json.ok) throw new Error('销售员登录失败：' + login2.json.message);
+  token = login2.json.data.token;
 
   const docsForSales = await api('/api/docs/out');
   assert(docsForSales.list.every(d => d.total_cost === undefined), '销售员看不到成本字段');

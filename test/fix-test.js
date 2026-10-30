@@ -28,8 +28,7 @@ async function expectFail(fn, re, m) {
 (async () => {
   console.log('\n===== 修复项专项测试 =====\n');
 
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  token = await require('./login-helper').loginAt(BASE + '/api/auth/login', 'admin', 'admin123');
   ok('超管登录');
 
   /* 准备基础数据 */

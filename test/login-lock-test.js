@@ -17,18 +17,52 @@ const PORT = Number(process.env.TEST_PORT) || 3999;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'wl-login-'));
 
+// 登录现在要图形验证码，测试得先把图还原成字符。
+// 只 require 纯常量模块 captcha-font，不会打开数据库。
+const { FONT, CELL } = require(path.join(__dirname, '..', 'src', 'server', 'captcha-font'));
+
+/** 从 SVG 里把点阵还原成字符 */
+function decodeSvg(svg) {
+  const out = [];
+  for (const chunk of svg.split('<g ').slice(1)) {
+    const body = chunk.slice(0, chunk.indexOf('</g>'));
+    const grid = Array.from({ length: 7 }, () => Array(5).fill('.'));
+    for (const m of body.matchAll(/<rect x="(-?[\d.]+)" y="(-?[\d.]+)"/g)) {
+      const c = Math.round(Number(m[1]) / CELL);
+      const r = Math.round(Number(m[2]) / CELL);
+      if (r >= 0 && r < 7 && c >= 0 && c < 5) grid[r][c] = '#';
+    }
+    const sig = grid.map(row => row.join('')).join('|');
+    out.push(Object.keys(FONT).find(k => FONT[k] === sig) || '?');
+  }
+  return out.join('');
+}
+
+/** 取一张验证码，返回 { id, code } */
+async function captcha() {
+  const res = await fetch(BASE + '/api/auth/captcha');
+  const j = await res.json();
+  if (!j.ok || !j.data || j.data.enabled === false) throw new Error('取验证码失败：' + (j.message || '已关闭'));
+  return { id: j.data.id, code: decodeSvg(j.data.svg) };
+}
+
 let failed = 0;
 const assert = (cond, msg) => {
   if (cond) console.log('  ✓ ' + msg);
   else { console.error('  ✗ ' + msg); failed++; }
 };
 
-/** 发登录请求，不抛错，原样返回状态码和 JSON */
-async function login(username, password) {
+/** 发登录请求，不抛错，原样返回状态码和 JSON（每次都取新验证码） */
+async function login(username, password, codeOverride) {
+  const c = await captcha();
   const res = await fetch(BASE + '/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({
+      username, password,
+      captcha_id: c.id,
+      captcha_code: codeOverride === undefined ? c.code : codeOverride
+    })
   });
   return { status: res.status, json: await res.json() };
 }

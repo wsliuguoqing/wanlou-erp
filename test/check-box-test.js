@@ -38,8 +38,7 @@ function assert(cond, msg) {
 (async () => {
   console.log('\n========== 箱装物料盘点按卷显示 ==========\n');
 
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  token = await require('./login-helper').loginAt(BASE + '/api/auth/login', 'admin', 'admin123');
   console.log('  ✓ 超管登录');
 
   // 找一个有库存的箱装物料

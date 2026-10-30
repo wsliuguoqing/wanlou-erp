@@ -49,8 +49,7 @@ function stockOf(m) {
 (async () => {
   console.log('\n========== 箱装母卷库存显示回归 ==========\n');
 
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  token = await require('./login-helper').loginAt(BASE + '/api/auth/login', 'admin', 'admin123');
   console.log('  ✓ 超管登录');
 
   // 物料下拉（新建出库单用的就是这个接口）

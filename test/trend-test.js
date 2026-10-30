@@ -25,7 +25,7 @@ const near = (a, b) => Math.abs(a - b) < 0.02;
 (async () => {
   console.log('\n===== 经营分析测试 =====\n');
 
-  token = (await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' })).token;
+  token = await require('./login-helper').loginAt(BASE + '/api/auth/login', 'admin', 'admin123');
   const wh = await api('/api/warehouses', 'POST', { name: '趋势测试仓' });
   const cust = await api('/api/customers', 'POST', { name: '趋势客户', contact: '李', phone: '13700000001' });
   const supp = await api('/api/suppliers', 'POST', { name: '趋势供应商', contact: '王', phone: '13700000002' });

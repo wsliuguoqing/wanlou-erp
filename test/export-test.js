@@ -65,8 +65,7 @@ function assert(c, m) { c ? ok(m) : no(m); }
   const tmpDir = '.tmp-export-test';
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-  const login = await api('/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  token = await require('./login-helper').loginAt('http://localhost:3000/api/auth/login', 'admin', 'admin123');
   ok('超管登录');
 
   /* 准备基础数据 */

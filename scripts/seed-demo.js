@@ -120,8 +120,9 @@ function pickDate(ym, todayStr) {
   console.log(`  区间：${FROM} ~ ${TO}，每月 ${PER_MONTH} 张出库单`);
   console.log(`  模式：${WRITE ? '写入数据库' : '仅预览（加 --yes 才写入）'}\n`);
 
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  // 登录要带图形验证码，交给 test/login-helper 自动识别
+  const { loginToken } = require(require('node:path').join(__dirname, '..', 'test', 'login-helper'));
+  token = await loginToken(BASE, 'admin', 'admin123');
   console.log('  ✓ 已登录');
 
   const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);

@@ -25,7 +25,8 @@ async function api(path, method = 'GET', body) {
   if (res.status === 401) { logout(true); throw new Error('登录已过期，请重新登录'); }
   if (!json.ok) {
     const err = new Error(json.message || '操作失败');
-    err.retryAfter = json.retryAfter; // 登录输错太多被锁时的剩余秒数
+    err.retryAfter = json.retryAfter;   // 登录输错太多被锁时的剩余秒数
+    err.captchaFail = json.captchaFail; // 图形验证码不对，前端据此刷新图片
     throw err;
   }
   return json.data;
@@ -178,7 +179,7 @@ const ROLE_NAME = { sales: '销售员', purchaser: '采购员', finance: '财务
 
 function render() {
   const root = document.getElementById('app');
-  if (!App.user) { root.innerHTML = renderLogin(); return; }
+  if (!App.user) { root.innerHTML = renderLogin(); loadCaptcha(); return; }
 
   // 当前路由若没有权限，回落到看板，避免渲染出空白页
   const allowed = new Set();
@@ -223,6 +224,38 @@ function findTitle(key) {
 }
 
 /* ---------------- 登录 ---------------- */
+/* 图形验证码：登录页每次渲染/刷新都重新取一张，服务端一次性校验 */
+const Captcha = { id: '', off: false };
+
+async function loadCaptcha() {
+  const box = document.getElementById('lg-cap');
+  if (!box) return;
+  // 整个「图形验证码」这一行（含输入框）在关闭验证码时要一起藏起来
+  const field = typeof box.closest === 'function' ? box.closest('.login-field') : null;
+  const sub = document.querySelector('.login-right > p');
+  const setSub = t => { if (sub) sub.textContent = t; };
+  box.innerHTML = '<span class="login-cap-loading">加载中…</span>';
+  try {
+    const d = await api('/auth/captcha');
+    if (!d || d.enabled === false) {
+      Captcha.off = true;
+      Captcha.id = '';
+      if (field) field.style.display = 'none';
+      setSub('请输入账号和密码');
+      return;
+    }
+    Captcha.off = false;
+    Captcha.id = d.id;
+    if (field) field.style.display = '';
+    setSub('请输入账号、密码和图形验证码');
+    // 用 img 包一层：SVG 以图片方式渲染，不会执行任何脚本
+    box.innerHTML = `<img alt="图形验证码" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(d.svg)}">`;
+  } catch (e) {
+    Captcha.id = '';
+    box.innerHTML = '<span class="login-cap-loading">加载失败，点击重试</span>';
+  }
+}
+
 /* 登录失败时把已填的账号密码回填，用户改一个字就能重试，不用重打 */
 function renderLogin(err, username, password) {
   return `<div class="login">
@@ -235,12 +268,19 @@ function renderLogin(err, username, password) {
     </div>
     <div class="login-right">
       <h2>登录</h2>
-      <p>请输入账号和密码</p>
+      <p>请输入账号、密码和图形验证码</p>
       ${err ? `<div class="login-err">${esc(err)}</div>` : ''}
       <div class="login-field"><label>账号</label><input id="lg-u" autocomplete="username" value="${esc(username || '')}"></div>
       <div class="login-field"><label>密码</label><input id="lg-p" type="password" autocomplete="current-password"
         value="${esc(password || '')}"
         onkeydown="if(event.key==='Enter')doLogin()"></div>
+      <div class="login-field"><label>图形验证码</label>
+        <div class="login-cap">
+          <input id="lg-c" autocomplete="off" maxlength="4" placeholder="输入右侧 4 位字符"
+            onkeydown="if(event.key==='Enter')doLogin()">
+          <div class="login-cap-img" id="lg-cap" onclick="loadCaptcha()" title="看不清？点击换一张"></div>
+        </div>
+      </div>
       <button class="login-btn" onclick="doLogin()">登 录</button>
       <div class="login-tip">
         首次使用请输入超级管理员账号 admin，密码 admin123，登录后请立即修改密码。
@@ -276,14 +316,20 @@ async function doLogin() {
   if (loginLockTimer) return; // 倒计时没走完，点了也不发请求
   const u = document.getElementById('lg-u').value.trim();
   const p = document.getElementById('lg-p').value;
+  const cEl = document.getElementById('lg-c');
+  const c = cEl ? cEl.value.trim() : '';
   const rerender = msg => {
     document.getElementById('app').innerHTML = renderLogin(msg, u, p);
+    loadCaptcha(); // 验证码是一次性的，换了页面就得换一张
     const pw = document.getElementById('lg-p');
     if (pw) { pw.focus(); pw.setSelectionRange(pw.value.length, pw.value.length); }
   };
   if (!u || !p) { rerender('请输入账号和密码'); return; }
+  if (!Captcha.off && !c) { rerender('请输入图形验证码'); return; }
   try {
-    const d = await api('/auth/login', 'POST', { username: u, password: p });
+    const d = await api('/auth/login', 'POST', {
+      username: u, password: p, captcha_id: Captcha.id, captcha_code: c
+    });
     if (loginLockTimer) { clearInterval(loginLockTimer); loginLockTimer = null; }
     App.token = d.token;
     App.user = d.user;
@@ -293,6 +339,11 @@ async function doLogin() {
   } catch (e) {
     rerender(e.message);
     if (e.retryAfter) startLoginLock(e.retryAfter);
+    // 验证码输错/过期：把光标放回验证码框，省得用户再去点
+    if (e.captchaFail) {
+      const el = document.getElementById('lg-c');
+      if (el) { el.value = ''; el.focus(); }
+    }
   }
 }
 

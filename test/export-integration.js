@@ -94,12 +94,7 @@ const no = m => { console.log('  ✗ ' + m); failed++; };
     // 3. 实际调用后端接口验证
     console.log('\n  --- 后端接口验证 ---\n');
 
-    const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-    if (!login.ok) {
-      no('登录失败');
-      process.exit(1);
-    }
-    token = login.data.token;
+    token = await require('./login-helper').loginAt(API + '/api/auth/login', 'admin', 'admin123');
     ok('登录成功');
 
     const docs = await api('/api/docs/out?page=1&size=10');

@@ -54,7 +54,7 @@ class HttpError extends Error {
   // extra：附加字段（如登录锁定的 retryAfter 秒数），会一起返回给前端
   constructor(status, message, extra) { super(message); this.status = status; Object.assign(this, extra); }
 }
-const bad = (msg) => { throw new HttpError(400, msg); };
+const bad = (msg, extra) => { throw new HttpError(400, msg, extra); };
 const notFound = (msg = '未找到') => { throw new HttpError(404, msg); };
 const forbidden = (msg = '没有权限') => { throw new HttpError(403, msg); };
 
@@ -155,6 +155,7 @@ function createServer() {
       if (status >= 500) console.error('[500]', pathname, err);
       const payload = { ok: false, message: err.message || '服务器错误' };
       if (err.retryAfter) payload.retryAfter = err.retryAfter;
+      if (err.captchaFail) payload.captchaFail = true;
       send(res, status, payload);
     }
   });

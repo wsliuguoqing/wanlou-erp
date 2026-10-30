@@ -1,6 +1,7 @@
 'use strict';
 const { route, bad, forbidden, HttpError, createSession, destroySession, logAction } = require('../http-framework');
 const { db, now, verifyPassword, hashPassword } = require('../db');
+const captcha = require('../captcha');
 
 /* ---------- 登录失败次数限制 ----------
  * 同一账号 + 同一台电脑连续输错 3 次，锁 1 分钟，锁定期内正确密码也不放行。
@@ -53,15 +54,30 @@ function failError(key) {
   return new HttpError(400, `账号或密码错误，还可再试 ${remain} 次`);
 }
 
+/* ---------- 图形验证码 ---------- */
+/* 登录页每次打开/刷新都取一张。SVG 里没有明文，脚本读不出答案。 */
+route('GET', '/api/auth/captcha', async (ctx) => {
+  if (!captcha.captchaEnabled()) return { enabled: false };
+  const { id, svg, width, height } = captcha.issue(ctx.ip);
+  return { enabled: true, id, svg, width, height };
+}, { public: true });
+
 /* ---------- 登录 ---------- */
 route('POST', '/api/auth/login', async (ctx) => {
-  const { username, password } = ctx.body;
+  const { username, password, captcha_id, captcha_code } = ctx.body;
   if (!username || !password) bad('请输入账号和密码');
 
   const key = failKey(ctx, username);
   const locked = lockSeconds(key);
   if (locked > 0) {
     throw new HttpError(429, `密码连续输错 ${LOGIN_MAX_FAIL} 次，请 ${locked} 秒后再试`, { retryAfter: locked });
+  }
+
+  // 图形验证码：先于密码校验，输错直接打回，不消耗密码失败次数
+  // （验证码本身是一次性的，想再试就得重新取图，暴力试错成本已经很高）
+  if (captcha.captchaEnabled()) {
+    if (!captcha_id || !captcha_code) bad('请输入图形验证码', { captchaFail: true });
+    captcha.verify(captcha_id, captcha_code);
   }
 
   const user = db.prepare('SELECT * FROM users WHERE username=?').get(String(username).trim());

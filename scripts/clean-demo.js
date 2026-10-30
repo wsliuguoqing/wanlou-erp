@@ -60,8 +60,9 @@ async function api(p, method = 'GET', body) {
   }
 
   // 1. 逐张作废（库存回滚），退货单先作废
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  // 登录要带图形验证码，交给 test/login-helper 自动识别
+  const { loginToken } = require(path.join(__dirname, '..', 'test', 'login-helper'));
+  token = await loginToken(BASE, 'admin', 'admin123');
 
   const order = ['SRET', 'PRET', 'OUT', 'IN'];
   const targets = docs.filter(d => d.status === 'approved')

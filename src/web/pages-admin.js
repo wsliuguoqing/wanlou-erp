@@ -274,8 +274,14 @@ page('settings', () => {
             <option value="1" ${s.need_approval === '1' ? 'selected' : ''}>启用（单据需审核后才动库存）</option>
             <option value="0" ${s.need_approval !== '1' ? 'selected' : ''}>关闭（提交即生效）</option>
           </select></div>
+        <div class="field"><label>登录图形验证码</label>
+          <select class="inp" id="st-captcha">
+            <option value="1" ${s.login_captcha !== '0' ? 'selected' : ''}>开启（推荐，防恶意试密码）</option>
+            <option value="0" ${s.login_captcha === '0' ? 'selected' : ''}>关闭</option>
+          </select></div>
       </div>
       <div class="hint" style="margin-top:10px">审批流程关闭后，单据提交即生效并立即改变库存，适合只有你一个人使用系统的场景。</div>
+      <div class="hint">图形验证码关闭后，登录只靠「输错 3 次锁 1 分钟」防护；系统对公网开放时建议保持开启。</div>
     </div>
     <div class="card pad">
       <div class="sec">数据备份</div>
@@ -308,7 +314,8 @@ async function saveSettings() {
     sn_prefix_PRET: document.getElementById('st-p-pret').value,
     sn_prefix_CHECK: document.getElementById('st-p-check').value,
     min_waste: document.getElementById('st-waste').value,
-    need_approval: document.getElementById('st-approval').value
+    need_approval: document.getElementById('st-approval').value,
+    login_captcha: document.getElementById('st-captcha').value
   };
   try {
     await api('/settings', 'PUT', body);

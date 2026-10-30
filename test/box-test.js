@@ -19,8 +19,7 @@ async function api(path, method = 'GET', body) {
 (async () => {
   console.log('\n===== 箱装小卷测试 =====\n');
   try {
-    const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-    token = login.token;
+    token = await require('./login-helper').loginAt(BASE + '/api/auth/login', 'admin', 'admin123');
     console.log('  ✓ 超管登录');
 
     const wh = await api('/api/warehouses', 'POST', { name: '测试仓' + Date.now() });

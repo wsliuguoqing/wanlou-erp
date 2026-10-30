@@ -44,7 +44,11 @@ function assert(cond, msg) {
 (async () => {
   console.log('\n========== 同单多行库存校验回归 ==========\n');
 
-  const login = await api('/api/auth/login', 'POST', { username: 'admin', password: 'admin123' });
+  // 现在要带图形验证码，用 login-helper 自动识别
+  const { loginRaw } = require('./login-helper');
+  const lr = await loginRaw(BASE, 'admin', 'admin123');
+  if (!lr.json.ok) throw new Error('登录失败：' + lr.json.message);
+  const login = lr.json.data;
   token = login.token;
   console.log('  ✓ 超管登录');
   // 出库单要求销售人员有工号

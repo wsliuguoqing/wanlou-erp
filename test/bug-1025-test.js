@@ -22,8 +22,7 @@ const no = m => { console.log('  ✗ ' + m); failed++; };
 (async () => {
   console.log('\n===== 2026-10-25 bug 专项测试 =====\n');
 
-  const login = await api('/auth/login', 'POST', { username: 'admin', password: 'admin123' });
-  token = login.token;
+  token = await require('./login-helper').loginAt(BASE + '/auth/login', 'admin', 'admin123');
   ok('超管登录');
 
   /* 1. 母卷明细分页 */
